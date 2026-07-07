@@ -40,6 +40,7 @@ from boneseg.data import (
     save_geojson,
     save_mask_raster,
     save_overlay_png,
+    save_plate_pdf,
     save_skeleton_png,
     save_svg,
 )
@@ -353,6 +354,16 @@ class BonePipeline:
                 save_svg(result.polylines_px, out_dir / f"{stem}_centerlines.svg",
                          width=result.width, height=result.height)
             )
+        if export.save_plate:
+            plate_path = save_plate_pdf(
+                result.image, result.mask, result.polylines_px, result.georef,
+                out_dir / f"{stem}_plate.pdf",
+                label=stem, site=export.plate_site, note=export.plate_note,
+                model_name=self.engine.spec.key,
+                overlay_opacity=min(display.overlay_opacity, 0.4),
+            )
+            if plate_path is not None:
+                written.append(plate_path)
         if export.append_master:
             written.extend(
                 append_to_master(

@@ -99,10 +99,15 @@ class ExportSettings:
     save_geojson: bool = True
     save_dxf: bool = True
     save_svg: bool = False
+    save_plate: bool = False        # A4 catalog plate PDF (scale bar + north arrow)
 
     # Merge every exported grave into ONE site-wide GeoJSON pair + DXF
     # (master_*.geojson / master.dxf in output_dir) — see boneseg/data/master.py
     append_master: bool = False
+
+    # Plate title block
+    plate_site: str = ""            # site / excavation name printed on plates
+    plate_note: str = ""            # free-text note printed under the photo
 
 
 @dataclass

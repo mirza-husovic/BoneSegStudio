@@ -63,8 +63,11 @@
         <label class="check"><input type="checkbox" value="geojson" checked> GeoJSON</label>
         <label class="check"><input type="checkbox" value="dxf" checked> DXF</label>
         <label class="check"><input type="checkbox" value="svg"> SVG</label>
+        <label class="check"><input type="checkbox" value="plate"> Plate (PDF)</label>
       </div>
       <label class="check"><input id="mastercb" type="checkbox"> Append to site master file</label>
+      <label class="lbl" for="sitename">Site name <span class="hint">(printed on plates)</span></label>
+      <input id="sitename" type="text" spellcheck="false" placeholder="e.g. Balaban — grobovi">
       <label class="lbl" for="outdir">Output directory</label>
       <input id="outdir" type="text" spellcheck="false">
       <button id="exportbtn" class="btn block" type="button">💾 Export</button>

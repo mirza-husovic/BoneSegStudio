@@ -1,6 +1,7 @@
 """Image reading and artifact writing."""
 
 from boneseg.data.master import append_to_master
+from boneseg.data.plate import save_plate_pdf
 from boneseg.data.readers import GeoRef, read_image
 from boneseg.data.writers import (
     render_overlay,
@@ -21,6 +22,7 @@ __all__ = [
     "save_geojson",
     "save_mask_raster",
     "save_overlay_png",
+    "save_plate_pdf",
     "save_skeleton_png",
     "save_svg",
 ]

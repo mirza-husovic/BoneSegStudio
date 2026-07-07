@@ -40,3 +40,6 @@ networkx==3.6.1
 
 # --- DXF (reserved for the planned DXF export feature) ---
 ezdxf==1.4.3
+
+# --- catalog plate PDF (optional, like ezdxf: export skipped if missing) ---
+matplotlib==3.10.8

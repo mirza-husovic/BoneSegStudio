@@ -1362,6 +1362,9 @@ function watchJob(onDone) {
 
 $("#cancelbtn").addEventListener("click", () => apiPost("/api/cancel").catch(() => {}));
 
+$("#sitename").addEventListener("input",
+  () => localStorage.setItem("boneseg.site", $("#sitename").value));
+
 /* ------------------------------------------------------------------ */
 /* Export                                                               */
 /* ------------------------------------------------------------------ */
@@ -1376,6 +1379,7 @@ $("#exportbtn").addEventListener("click", async () => {
       out_dir: $("#outdir").value,
       append_master: $("#mastercb").checked,
       opacity: S.opacity,
+      plate_site: $("#sitename").value,
     });
     const st = $("#exportstatus");
     st.innerHTML = `Exported <b>${res.files.length}</b> file(s) to <code>${res.target}</code> ` +
@@ -1446,6 +1450,7 @@ $("#batchrun").addEventListener("click", async () => {
       choices,
       append_master: $("#batchmaster").checked,
       opacity: S.opacity,
+      plate_site: $("#sitename").value,
     });
     watchJob(async (job) => {
       $("#batchsummary").textContent = job.message;
@@ -1609,6 +1614,7 @@ async function init() {
   $("#outdir").value = st.defaults.out_dir;
   $("#batchout").value = st.defaults.out_dir + "\\batch";
   $("#traindir").value = st.defaults.train_dir;
+  $("#sitename").value = localStorage.getItem("boneseg.site") || "";
 
   // Resume state if the server already has an image/result (page reload).
   if (st.has_image) {

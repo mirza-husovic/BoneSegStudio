@@ -60,7 +60,7 @@ logger = get_logger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 
-EXPORT_KEYS = ("mask", "overlay", "skeleton", "geojson", "dxf", "svg")
+EXPORT_KEYS = ("mask", "overlay", "skeleton", "geojson", "dxf", "svg", "plate")
 
 
 class Cancelled(Exception):
@@ -221,7 +221,10 @@ def _export_from(payload: dict) -> ExportSettings:
         save_geojson="geojson" in choices,
         save_dxf="dxf" in choices,
         save_svg="svg" in choices,
+        save_plate="plate" in choices,
         append_master=bool(payload.get("append_master", False)),
+        plate_site=str(payload.get("plate_site", "")).strip(),
+        plate_note=str(payload.get("plate_note", "")).strip(),
     )
 
 

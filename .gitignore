@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# App runtime
+logs/
+outputs/
+
+# Models (large binaries live outside the repo)
+*.pth
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# App runtime uploads
+uploads/

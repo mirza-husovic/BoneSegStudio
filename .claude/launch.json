@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "boneseg",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["app.py", "--no-browser", "--port", "7860"],
+      "port": 7860
+    }
+  ]
+}

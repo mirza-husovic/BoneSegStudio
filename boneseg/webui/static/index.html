@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BoneSeg Studio</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div id="brand">🦴 <b>BoneSeg Studio</b> <span id="version"></span></div>
+  <div id="jobarea" hidden>
+    <div id="jobmsg"></div>
+    <div id="jobbar"><div id="jobfill"></div></div>
+    <button id="cancelbtn" class="btn danger sm" type="button">✕ Cancel</button>
+  </div>
+  <div id="device" class="chip">…</div>
+</header>
+
+<div id="layout">
+
+  <!-- ======================= Sidebar ======================= -->
+  <aside id="sidebar">
+    <section>
+      <button id="openbtn" class="btn block" type="button">📂 Open image…</button>
+      <input id="fileinput" type="file" accept=".jpg,.jpeg,.png,.tif,.tiff" hidden>
+      <div id="imginfo" class="hint">No image loaded — drag &amp; drop works too.</div>
+    </section>
+
+    <section>
+      <label class="lbl" for="modelsel">Model</label>
+      <select id="modelsel"></select>
+      <label class="check"><input id="ttacb" type="checkbox"> 4-way TTA <span class="hint">(~4× slower)</span></label>
+      <div class="btnrow">
+        <button id="runbtn" class="btn primary block" type="button">▶ Run inference</button>
+      </div>
+    </section>
+
+    <section>
+      <div class="sect-title">Segmentation</div>
+      <label class="lbl">Threshold <span id="thval" class="val"></span></label>
+      <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">
+      <label class="lbl">Min object size (px) <span id="mcval" class="val"></span></label>
+      <input id="mincomp" type="range" min="0" max="500" step="1">
+      <div class="sect-title">Skeleton</div>
+      <label class="lbl">Branch pruning (px) <span id="prval" class="val"></span></label>
+      <input id="prune" type="range" min="0" max="100" step="1">
+      <label class="lbl">Min fragment (px) <span id="msval" class="val"></span></label>
+      <input id="minskel" type="range" min="0" max="300" step="1">
+      <button id="applysettings" class="btn block" type="button">↻ Apply settings <span class="hint">(no re-inference)</span></button>
+      <div class="sect-title">Display</div>
+      <label class="lbl">Overlay opacity <span id="opval" class="val"></span></label>
+      <input id="opacity" type="range" min="0" max="1" step="0.05">
+    </section>
+
+    <section>
+      <div class="sect-title">Export</div>
+      <div id="exportchoices" class="checkgrid">
+        <label class="check"><input type="checkbox" value="mask" checked> Binary mask</label>
+        <label class="check"><input type="checkbox" value="overlay" checked> Overlay</label>
+        <label class="check"><input type="checkbox" value="skeleton" checked> Skeleton</label>
+        <label class="check"><input type="checkbox" value="geojson" checked> GeoJSON</label>
+        <label class="check"><input type="checkbox" value="dxf" checked> DXF</label>
+        <label class="check"><input type="checkbox" value="svg"> SVG</label>
+      </div>
+      <label class="check"><input id="mastercb" type="checkbox"> Append to site master file</label>
+      <label class="lbl" for="outdir">Output directory</label>
+      <input id="outdir" type="text" spellcheck="false">
+      <button id="exportbtn" class="btn block" type="button">💾 Export</button>
+      <div id="exportstatus" class="hint"></div>
+    </section>
+
+    <section>
+      <div class="sect-title">Training set</div>
+      <label class="lbl" for="traindir">Staging folder (merged into the dataset later)</label>
+      <input id="traindir" type="text" spellcheck="false">
+      <button id="trainbtn" class="btn block" type="button">🎓 Save to training set</button>
+      <div id="trainstatus" class="hint"></div>
+    </section>
+  </aside>
+
+  <!-- ======================= Main ======================= -->
+  <main id="main">
+    <div id="toolbar">
+      <div class="group" id="modes">
+        <button data-mode="overlay" class="tbtn active" title="Overlay (1)">Overlay</button>
+        <button data-mode="original" class="tbtn" title="Original (2)">Original</button>
+        <button data-mode="mask" class="tbtn" title="Mask (3)">Mask</button>
+        <button data-mode="skeleton" class="tbtn" title="Skeleton over photo (4)">Skeleton</button>
+        <button data-mode="clean" class="tbtn" title="Clean skeleton — black centerlines on white (5)">Clean</button>
+      </div>
+      <div class="sep"></div>
+      <div class="group" id="tools">
+        <button data-tool="pan" class="tbtn active" title="Pan (H) — middle/right mouse or Space always pans">✋ Pan</button>
+        <button data-tool="brush" class="tbtn" title="Brush (B) — draw bone">🖌 Brush</button>
+        <button data-tool="eraser" class="tbtn" title="Eraser (E) — removes mask; in Skeleton/Clean view removes centerlines">◻ Eraser</button>
+        <button data-tool="pen" class="tbtn" title="Line pen (P) — click to place points, double-click or Enter to finish. Snaps to existing lines (green ring) so joins are exact">✒ Line</button>
+        <button data-tool="node" class="tbtn" title="Nodes (N) — drag a point to move it; double-click a line to insert a point; click a line then Del removes it; drag a rectangle over points to select many, then Del">◈ Nodes</button>
+        <button data-tool="select" class="tbtn" title="Select component (S) — click a blob (or a centerline in Skeleton/Clean view), then Delete">⬚ Select</button>
+      </div>
+      <div class="group" id="sizegroup" hidden>
+        <label class="lbl-inline">Size</label>
+        <input id="toolsize" type="range" min="1" max="100" step="1">
+        <span id="toolsizeval" class="val"></span>
+      </div>
+      <div class="group">
+        <button id="undobtn" class="tbtn" title="Undo (Ctrl+Z)" disabled>↶</button>
+        <button id="redobtn" class="tbtn" title="Redo (Ctrl+Y)" disabled>↷</button>
+        <button id="delselbtn" class="tbtn" title="Delete selected component (Del)" hidden>🗑 Delete selected</button>
+      </div>
+      <div class="sep"></div>
+      <button id="applyedits" class="btn primary sm" title="Rebuild skeleton + vectors from your edited mask" disabled>✓ Apply edits</button>
+      <div class="spacer"></div>
+      <span id="zoomlabel" class="hint"></span>
+      <button id="fitbtn" class="tbtn" title="Fit to window (F, double-click)">⤢ Fit</button>
+      <div class="sep"></div>
+      <button id="batchtoggle" class="tbtn" title="Batch processing">📁 Batch</button>
+    </div>
+
+    <div id="canvaswrap">
+      <canvas id="view"></canvas>
+      <div id="emptystate">
+        <div class="big">🦴</div>
+        <div>Open an image (or drop it here), then <b>Run inference</b>.</div>
+        <div class="hint">Wheel = zoom · drag / middle mouse / Space = pan · B brush · E eraser · P line pen · S select+Delete · Ctrl+Z undo</div>
+      </div>
+    </div>
+
+    <div id="batchpanel" hidden>
+      <h3>Batch processing</h3>
+      <p class="hint">Runs every supported image in a folder with the sidebar settings; exports use the checked formats. One subfolder per image + <code>batch_summary.json</code>.</p>
+      <div id="batchdrop" class="dropzone">
+        <div class="big">📥</div>
+        <div><b>Drop a folder or images here</b></div>
+        <div class="hint">…or type the folder path below</div>
+      </div>
+      <label class="lbl">Input folder</label>
+      <input id="batchin" type="text" placeholder="C:\path\to\images" spellcheck="false">
+      <label class="lbl">Output folder</label>
+      <input id="batchout" type="text" spellcheck="false">
+      <label class="check"><input id="batchmaster" type="checkbox" checked> Build combined master file (GPKG + DXF + GeoJSON)</label>
+      <button id="batchrun" class="btn primary" type="button">▶ Process folder</button>
+      <div id="batchsummary" class="hint"></div>
+      <div id="batchtablewrap"></div>
+    </div>
+
+    <footer id="statusbar">
+      <span id="stats">Ready.</span>
+    </footer>
+  </main>
+</div>
+
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -37,6 +37,13 @@ Ako nešto pođe po zlu: `git log --oneline` + `git checkout <tag/commit> -- .`
    `<fotka>.jpg.gcps.json` (auto-reapply na svako otvaranje, i single i
    batch_open!) i **world file** (`.jgw`/`.pgw`/`.tfw` + `.prj`) pa se
    ORIGINALNA fotka otvara georeferencirana u QGIS-u. `clear:true` briše.
+   Sidecar autoload živi u `read_image` (readers.py, lazy import) pa vrijedi
+   za SVE putove: single open, batch i batch-reopen.
+5. **Kombinirani `catalog.pdf`** — batch s uključenom "Plate (PDF)" opcijom
+   uz per-image table piše i jedan `catalog.pdf` (grob po stranici) u root
+   batch outputa. `plate.py` = `render_plate_figure()` + `save_plate_pdf()`;
+   `process_folder` akumulira kroz `PdfPages` (zatvara se u `finally`,
+   prazan se briše).
 
 Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
 `python tests/test_georef_fit.py`, `python tests/test_plate.py`.
@@ -74,12 +81,10 @@ Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
 
 ## Sljedeći koraci (redom po vrijednosti, NIŠTA nije obećano korisniku kao gotovo)
 
-1. **Kombinirani `catalog.pdf`** za batch (sve table u jedan PDF, grob po
-   stranici) — matplotlib `PdfPages`; najčišće: `plate.py` razdvojiti na
-   `render_plate(...) -> Figure` + writer, pa u `process_folder` skupljati.
-2. **Metapodaci po grobu na tabli**: dubina, orijentacija, opis, popis
+1. **Metapodaci po grobu na tabli**: dubina, orijentacija, opis, popis
    nalaza — mala forma u UI (per-image, spremati u sidecar JSON uz fotku
    kao gcps). Katalozi grobova to standardno imaju.
+2. **Redoslijed/odabir grobova u catalog.pdf** (sad = abecedno po datoteci).
 3. **Drawing-style tabla**: varijanta s bijelom podlogom + crne
    centerline + sivi outline (postojeći "Clean" pogled kao podloga) —
    klasičan izgled crteža u publikacijama.

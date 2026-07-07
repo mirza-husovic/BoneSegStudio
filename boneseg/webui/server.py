@@ -25,6 +25,7 @@ no science lives in this file.
 from __future__ import annotations
 
 import io
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -50,10 +51,15 @@ from boneseg.config import (
     PostprocessSettings,
 )
 from boneseg.data import GeoRef, read_image
+from boneseg.data.georef_fit import (
+    gcps_sidecar_path,
+    georef_from_gcps,
+    write_world_file,
+)
 from boneseg.logging_setup import get_logger
 from boneseg.models import MODEL_REGISTRY
 from boneseg.pipeline import BonePipeline, PipelineResult
-from boneseg.postprocessing import polylines_px_to_output
+from boneseg.postprocessing import mask_to_rings, polylines_px_to_output
 
 logger = get_logger(__name__)
 
@@ -126,6 +132,18 @@ class Studio:
         self.source_path = path
         self.image = img
         self.georef = georef
+        # A GCP sidecar (written by /api/georef) re-applies user
+        # georeferencing on every reopen of a plain photo.
+        if self.georef is None:
+            sidecar = gcps_sidecar_path(path)
+            if sidecar.is_file():
+                try:
+                    data = json.loads(sidecar.read_text(encoding="utf-8"))
+                    g, _res, rms = georef_from_gcps(data["gcps"], data.get("epsg"))
+                    self.georef = g
+                    logger.info("GCP sidecar applied: %s (rms %.3f m)", sidecar.name, rms)
+                except Exception:
+                    logger.exception("Ignoring unreadable GCP sidecar %s", sidecar)
         self.result = None
         self.mask_basis = None
         self.cl_add = None
@@ -747,6 +765,76 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(400, f"Path does not exist: {p}")
         os.startfile(str(p if p.is_dir() else p.parent))  # noqa: S606
         return {"ok": True}
+
+    # ------------------------------------------------------------------ #
+    # GCP georeferencing                                                  #
+    # ------------------------------------------------------------------ #
+    @app.post("/api/georef")
+    async def georef_apply(payload: dict = Body(...)):
+        """Fit an affine from user GCPs (edit-res px + surveyed E/N), apply
+        it to the current image/result, persist a sidecar for reopens and
+        write a world file so the ORIGINAL photo loads georeferenced in
+        QGIS. ``clear: true`` removes user georeferencing again."""
+        if state.image is None:
+            raise HTTPException(400, "Load an image first.")
+        _acquire()
+        try:
+            def _rewire(g: GeoRef | None) -> None:
+                if state.result is None:
+                    return
+                state.result.georef = g
+                state.result.polylines_out = polylines_px_to_output(
+                    state.result.polylines_px, g)
+                state.result.rings_out = mask_to_rings(state.result.mask, g)
+
+            sidecar = gcps_sidecar_path(state.source_path)
+            if payload.get("clear"):
+                state.georef = None
+                _rewire(None)
+                if sidecar.is_file():
+                    sidecar.unlink()
+                return {**state.result_summary(), "cleared": True}
+
+            swap = bool(payload.get("swap", False))
+            epsg_raw = payload.get("epsg")
+            try:
+                epsg = int(str(epsg_raw).strip()) if str(epsg_raw or "").strip() else None
+            except ValueError:
+                raise HTTPException(400, f"EPSG must be a number, got: {epsg_raw}")
+            scale = state.edit_scale
+            gcps = []
+            for g in payload.get("gcps") or []:
+                try:
+                    e, n = float(g["e"]), float(g["n"])
+                except (KeyError, TypeError, ValueError):
+                    raise HTTPException(400, "Every point needs numeric E and N.")
+                if swap:
+                    e, n = n, e
+                gcps.append({"px": float(g["px"]) / scale,
+                             "py": float(g["py"]) / scale, "e": e, "n": n})
+            try:
+                georef2, residuals, rms = georef_from_gcps(gcps, epsg)
+            except (ValueError, RuntimeError) as exc:
+                raise HTTPException(400, str(exc))
+
+            state.georef = georef2
+            _rewire(georef2)
+            sidecar.write_text(json.dumps(
+                {"version": 1, "epsg": epsg, "gcps": gcps}, indent=1),
+                encoding="utf-8")
+            world: list[str] = []
+            try:
+                world = [p.name for p in write_world_file(state.source_path, georef2)]
+            except Exception:
+                logger.exception("World file write failed (georef still applied)")
+            logger.info("Georef applied: %d GCPs, rms %.3f m, epsg=%s",
+                        len(gcps), rms, epsg)
+            return {**state.result_summary(),
+                    "residuals_m": [round(r, 3) for r in residuals],
+                    "rms_m": round(rms, 3),
+                    "world_files": world}
+        finally:
+            state.lock.release()
 
     # ------------------------------------------------------------------ #
     # Batch (background job)                                              #

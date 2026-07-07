@@ -101,6 +101,7 @@
         <button data-tool="pen" class="tbtn" title="Line pen (P) — click to place points, double-click or Enter to finish. Snaps to existing lines (green ring) so joins are exact">✒ Line</button>
         <button data-tool="node" class="tbtn" title="Nodes (N) — drag a point to move it; double-click a line to insert a point; click a line then Del removes it; drag a rectangle over points to select many, then Del">◈ Nodes</button>
         <button data-tool="select" class="tbtn" title="Select component (S) — click a blob (or a centerline in Skeleton/Clean view), then Delete">⬚ Select</button>
+        <button data-tool="gcp" class="tbtn" title="Georeference (G) — click 3+ points on the photo, enter their surveyed E/N, Apply">🌍 GCP</button>
       </div>
       <div class="group" id="sizegroup" hidden>
         <label class="lbl-inline">Size</label>
@@ -123,6 +124,27 @@
 
     <div id="canvaswrap">
       <canvas id="view"></canvas>
+      <div id="gcppanel" hidden>
+        <h4>🌍 Georeference (GCP)</h4>
+        <p class="hint">Click a point on the photo, then type its surveyed E/N —
+          3+ points. Or paste your point file below first: each click takes
+          the next point from the list.</p>
+        <textarea id="gcppaste" rows="3" spellcheck="false"
+          placeholder="ID  E  N  [Z]   (one point per line)"></textarea>
+        <div class="btnrow">
+          <button id="gcpparse" class="btn sm" type="button">Load points</button>
+          <button id="gcpreset" class="btn sm" type="button">Reset</button>
+        </div>
+        <div id="gcpqueue" class="hint"></div>
+        <div id="gcptablewrap"></div>
+        <div class="btnrow" id="gcpcrsrow">
+          <label class="lbl-inline" for="gcpepsg">EPSG</label>
+          <input id="gcpepsg" type="text" value="3765" spellcheck="false">
+          <label class="check"><input id="gcpswap" type="checkbox"> swap E/N</label>
+        </div>
+        <button id="gcpapply" class="btn primary block" type="button">✓ Apply georeference</button>
+        <div id="gcpstatus" class="hint"></div>
+      </div>
       <div id="emptystate">
         <div class="big">🦴</div>
         <div>Open an image (or drop it here), then <b>Run inference</b>.</div>

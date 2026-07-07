@@ -139,6 +139,32 @@ input[type=checkbox] { accent-color: var(--accent); }
 .dropzone.drag { border-color: var(--accent); color: var(--text);
   background: rgba(20, 184, 166, .08); }
 
+/* ---------- GCP georeferencing panel ---------- */
+#gcppanel {
+  position: absolute; top: 10px; right: 10px; width: 300px; max-height: 92%;
+  overflow-y: auto; z-index: 10; padding: 12px;
+  background: rgba(23, 30, 38, .96); border: 1px solid var(--border);
+  border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+}
+#gcppanel h4 { margin: 0; font-size: 13.5px; }
+#gcppanel textarea {
+  width: 100%; resize: vertical; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel2);
+  color: var(--text); font: 12px/1.4 Consolas, monospace; outline: none;
+}
+#gcppanel textarea:focus { border-color: var(--accent); }
+#gcptablewrap table { border-collapse: collapse; width: 100%; font-size: 12px; }
+#gcptablewrap td, #gcptablewrap th { border: 1px solid var(--border); padding: 2px 4px; }
+#gcptablewrap input { width: 100%; border: none; background: transparent;
+  color: var(--text); font: inherit; outline: none; padding: 2px; }
+#gcptablewrap .gcpdel { cursor: pointer; color: var(--danger); border: none;
+  background: none; font-size: 13px; }
+#gcpcrsrow { align-items: center; }
+#gcpcrsrow #gcpepsg { width: 70px; flex: 0 0 auto; }
+#gcpstatus.ok { color: var(--accent); }
+#gcpstatus.bad { color: var(--danger); }
+
 /* ---------- status bar ---------- */
 #statusbar {
   padding: 6px 12px; background: var(--panel); font-size: 12.5px;

@@ -326,6 +326,31 @@ function draw() {
     ctx.stroke();
   }
 
+  // GCP markers (screen space): orange crosshair + index while georeferencing.
+  if (S.tool === "gcp" && gcps.length) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    gcps.forEach((g, i) => {
+      const sx = S.view.tx + g.px * k;
+      const sy = S.view.ty + g.py * k;
+      ctx.strokeStyle = "#ff9d00";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(sx - 9, sy); ctx.lineTo(sx + 9, sy);
+      ctx.moveTo(sx, sy - 9); ctx.lineTo(sx, sy + 9);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillStyle = "#ff9d00";
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 3;
+      const lbl = `${i + 1}${g.id ? " " + g.id : ""}`;
+      ctx.strokeText(lbl, sx + 8, sy - 8);
+      ctx.fillText(lbl, sx + 8, sy - 8);
+    });
+  }
+
   // Brush cursor (screen space) — mask paint tools only.
   if (S.pointer.over && (S.tool === "brush" || S.tool === "eraser")) {
     const size = S.tool === "brush" ? S.brushSize : S.eraserSize;
@@ -904,6 +929,8 @@ canvas.addEventListener("pointerdown", (e) => {
     requestDraw();
   } else if (S.tool === "select") {
     selectComponentAt(p.x, p.y);
+  } else if (S.tool === "gcp") {
+    gcpAddPoint(p.x, p.y);
   }
 });
 
@@ -987,6 +1014,7 @@ window.addEventListener("keydown", (e) => {
     case "n": case "N": setTool("node"); break;
     case "h": case "H": case "v": case "V": setTool("pan"); break;
     case "s": case "S": setTool("select"); break;
+    case "g": case "G": setTool("gcp"); break;
     case "f": case "F": fitView(); break;
     case "1": setMode("overlay"); break;
     case "2": setMode("original"); break;
@@ -1022,6 +1050,7 @@ function setTool(tool) {
   S.tool = tool;
   $$("#tools .tbtn").forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
   canvas.className = `tool-${tool}`;
+  $("#gcppanel").hidden = tool !== "gcp";
   const hasSize = tool in SIZE_KEYS;
   $("#sizegroup").hidden = !hasSize;
   if (hasSize) {
@@ -1129,6 +1158,7 @@ async function loadPhoto() {
   S.hasMask = false;
   S.hasSkel = false;
   resetEditState();
+  gcpReset(false);   // GCPs belong to the previous photo
   fitView();
 }
 
@@ -1421,6 +1451,125 @@ $("#trainbtn").addEventListener("click", async () => {
     toast(`Training pair saved: ${res.stem}`, "ok");
   } catch (err) {
     toast(`Saving training pair failed: ${err.message}`, "error", 9000);
+  } finally {
+    setBusy(false);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* GCP georeferencing                                                   */
+/* ------------------------------------------------------------------ */
+let gcps = [];       // {px, py, e, n, id} — px/py in edit-image coords
+let gcpQueue = [];   // parsed-but-unclicked points {id, e, n}
+
+function gcpParseText(text) {
+  // Accepts "ID E N [Z]" or "E N" per line; separators = whitespace or ';',
+  // commas are decimal separators when Croatian-style ("4795123,45").
+  const pts = [];
+  for (let raw of text.split(/\r?\n/)) {
+    raw = raw.trim();
+    if (!raw || raw.startsWith("#") || raw.startsWith("//")) continue;
+    let toks = raw.split(/[;\s]+/);
+    if (toks.length === 1 && raw.includes(",")) toks = raw.split(",");
+    toks = toks.map((t) => /^-?\d+,\d+$/.test(t) ? t.replace(",", ".") : t)
+               .filter((t) => t !== "");
+    const num = toks.map(parseFloat);
+    if (toks.length >= 3 && !Number.isNaN(num[1]) && !Number.isNaN(num[2])) {
+      pts.push({ id: toks[0], e: num[1], n: num[2] });
+    } else if (toks.length === 2 && !Number.isNaN(num[0]) && !Number.isNaN(num[1])) {
+      pts.push({ id: "", e: num[0], n: num[1] });
+    }
+  }
+  return pts;
+}
+
+function gcpQueueInfo() {
+  $("#gcpqueue").textContent = gcpQueue.length
+    ? `${gcpQueue.length} point(s) loaded — next click places “${gcpQueue[0].id || gcpQueue[0].e}”.`
+    : "";
+}
+
+function gcpAddPoint(x, y) {
+  const q = gcpQueue.shift();
+  gcps.push({ px: x, py: y, e: q ? q.e : "", n: q ? q.n : "", id: q ? q.id : "" });
+  gcpQueueInfo();
+  renderGcpTable();
+  requestDraw();
+}
+
+function renderGcpTable() {
+  if (!gcps.length) { $("#gcptablewrap").innerHTML = ""; return; }
+  const rows = gcps.map((g, i) =>
+    `<tr><td>${i + 1}</td>` +
+    `<td><input data-i="${i}" data-f="e" value="${g.e}" spellcheck="false"></td>` +
+    `<td><input data-i="${i}" data-f="n" value="${g.n}" spellcheck="false"></td>` +
+    `<td><button class="gcpdel" data-i="${i}" title="Remove">✕</button></td></tr>`).join("");
+  $("#gcptablewrap").innerHTML =
+    `<table><tr><th>#</th><th>E (easting)</th><th>N (northing)</th><th></th></tr>${rows}</table>`;
+}
+
+$("#gcptablewrap").addEventListener("input", (e) => {
+  const t = e.target;
+  if (t.dataset.i !== undefined && t.dataset.f) gcps[+t.dataset.i][t.dataset.f] = t.value;
+});
+$("#gcptablewrap").addEventListener("click", (e) => {
+  const b = e.target.closest("button.gcpdel");
+  if (!b) return;
+  gcps.splice(+b.dataset.i, 1);
+  renderGcpTable();
+  requestDraw();
+});
+
+$("#gcpparse").addEventListener("click", () => {
+  gcpQueue = gcpParseText($("#gcppaste").value);
+  if (!gcpQueue.length) { toast("No points recognized — expected “ID E N” per line.", "error", 7000); return; }
+  gcpQueueInfo();
+  toast(`${gcpQueue.length} point(s) loaded — now click them on the photo in the same order.`, "ok", 7000);
+});
+
+function gcpReset(alsoQueue = true) {
+  gcps = [];
+  if (alsoQueue) { gcpQueue = []; $("#gcppaste").value = ""; }
+  gcpQueueInfo();
+  renderGcpTable();
+  $("#gcpstatus").textContent = "";
+  $("#gcpstatus").className = "hint";
+  requestDraw();
+}
+$("#gcpreset").addEventListener("click", () => gcpReset(true));
+
+$("#gcpapply").addEventListener("click", async () => {
+  if (gcps.length < 3) { toast("Place at least 3 points on the photo first.", "error", 6000); return; }
+  for (const g of gcps) {
+    if (String(g.e).trim() === "" || String(g.n).trim() === "" ||
+        Number.isNaN(parseFloat(g.e)) || Number.isNaN(parseFloat(g.n))) {
+      toast("Every point needs numeric E and N coordinates.", "error", 6000);
+      return;
+    }
+  }
+  setBusy(true);
+  try {
+    const res = await apiPost("/api/georef", {
+      gcps: gcps.map((g) => ({ px: g.px, py: g.py, e: parseFloat(g.e), n: parseFloat(g.n) })),
+      epsg: $("#gcpepsg").value.trim(),
+      swap: $("#gcpswap").checked,
+    });
+    applySummary(res);
+    updateStats();
+    const st = $("#gcpstatus");
+    const worst = Math.max(...res.residuals_m);
+    st.className = worst > 0.15 ? "hint bad" : "hint ok";
+    st.innerHTML =
+      `Applied — RMS <b>${(res.rms_m * 100).toFixed(1)} cm</b>, per point: ` +
+      res.residuals_m.map((r, i) => `#${i + 1} ${(r * 100).toFixed(1)}`).join(", ") + " cm." +
+      (worst > 0.15 ? "<br>⚠ Large residuals — check for a swapped E/N or a mistyped digit."
+                    : "") +
+      (res.world_files.length
+        ? `<br>World file written (${res.world_files.join(", ")}) — the photo now opens georeferenced in QGIS.`
+        : "");
+    toast(`Georeferenced — RMS ${(res.rms_m * 100).toFixed(1)} cm. Exports are now in real coordinates.`, "ok", 8000);
+  } catch (err) {
+    toast(`Georeferencing failed: ${err.message}`, "error", 9000);
   } finally {
     setBusy(false);
   }

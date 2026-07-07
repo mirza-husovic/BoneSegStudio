@@ -126,20 +126,20 @@ def _draw_north_arrow(ax, x_mm: float, y_mm: float, angle_deg: float) -> None:
             ha="center", va="center", fontweight="bold")
 
 
-def save_plate_pdf(
+def render_plate_figure(
     image_rgb: np.ndarray,
     mask01: np.ndarray,
     polylines_px: Sequence[Polyline],
     georef: GeoRef | None,
-    out_path: Path,
     label: str,
     site: str = "",
     note: str = "",
     model_name: str = "",
     overlay_opacity: float = 0.35,
-) -> Path | None:
-    """Render one catalog plate to ``out_path`` (PDF). Returns None if
-    matplotlib is unavailable."""
+):
+    """Compose one plate as a matplotlib Figure (A4). Returns None if
+    matplotlib is unavailable. Caller owns the figure (savefig + close);
+    the batch catalog reuses this to append pages into one PdfPages."""
     if not HAS_MPL:
         logger.warning("matplotlib not installed — plate export skipped")
         return None
@@ -239,7 +239,30 @@ def save_plate_pdf(
         page.text(mid_x, MARGIN + 22, note, fontsize=8.5, ha="center",
                   va="top", wrap=True)
 
+    fig._boneseg_scale = scale  # for the writer's log line
+    return fig
+
+
+def save_plate_pdf(
+    image_rgb: np.ndarray,
+    mask01: np.ndarray,
+    polylines_px: Sequence[Polyline],
+    georef: GeoRef | None,
+    out_path: Path,
+    label: str,
+    site: str = "",
+    note: str = "",
+    model_name: str = "",
+    overlay_opacity: float = 0.35,
+) -> Path | None:
+    """Render one catalog plate to ``out_path`` (PDF). Returns None if
+    matplotlib is unavailable."""
+    fig = render_plate_figure(image_rgb, mask01, polylines_px, georef,
+                              label, site, note, model_name, overlay_opacity)
+    if fig is None:
+        return None
     fig.savefig(out_path, format="pdf", dpi=200)
+    scale = fig._boneseg_scale
     plt.close(fig)
     logger.info("Plate written: %s (scale %s)", out_path,
                 f"1:{scale}" if scale else "none")

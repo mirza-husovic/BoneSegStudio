@@ -54,14 +54,36 @@ def is_supported(path: Path) -> bool:
     return path.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
+def _sidecar_georef(path: Path) -> GeoRef | None:
+    """GeoRef from a user GCP sidecar (written by the in-app georeferencer),
+    so plain photos come back georeferenced on EVERY read — single open,
+    batch and batch-reopen alike. Lazy import avoids a module cycle."""
+    from boneseg.data.georef_fit import gcps_sidecar_path, georef_from_gcps
+
+    sidecar = gcps_sidecar_path(path)
+    if not sidecar.is_file():
+        return None
+    try:
+        import json
+
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        g, _res, rms = georef_from_gcps(data["gcps"], data.get("epsg"))
+        logger.info("GCP sidecar applied: %s (rms %.3f m)", sidecar.name, rms)
+        return g
+    except Exception:
+        logger.exception("Ignoring unreadable GCP sidecar %s", sidecar)
+        return None
+
+
 def read_image(path: Path) -> tuple[np.ndarray, GeoRef | None]:
     """Read an image as RGB uint8.
 
     Returns
     -------
     (array, georef)
-        ``georef`` is None for non-georeferenced inputs; downstream outputs
-        then fall back to pixel coordinates.
+        ``georef`` is None for non-georeferenced inputs (unless a GCP
+        sidecar exists next to the file); downstream outputs otherwise
+        fall back to pixel coordinates.
 
     Raises
     ------
@@ -100,9 +122,11 @@ def read_image(path: Path) -> tuple[np.ndarray, GeoRef | None]:
                     src.transform is not None and not src.transform.is_identity
                 )
                 georef = GeoRef(src.transform, src.crs) if has_transform else None
+                if georef is None:
+                    georef = _sidecar_georef(path)
                 return arr, georef
         except Exception as exc:
             logger.warning("rasterio read failed for %s (%s); trying PIL", path.name, exc)
 
     img = np.array(Image.open(path).convert("RGB"))
-    return img, None
+    return img, _sidecar_georef(path)

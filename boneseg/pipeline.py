@@ -405,37 +405,70 @@ class BonePipeline:
         )
         logger.info("Batch: %d files in %s -> %s", len(files), input_dir, output_dir)
 
+        # One combined catalog (grave per page) accumulated alongside the
+        # per-image plates; only when the plate export is selected.
+        catalog = None
+        catalog_pages = 0
+        if export.save_plate:
+            from boneseg.data.plate import HAS_MPL, render_plate_figure
+            if HAS_MPL:
+                from matplotlib import pyplot as plt
+                from matplotlib.backends.backend_pdf import PdfPages
+                output_dir.mkdir(parents=True, exist_ok=True)
+                catalog = PdfPages(output_dir / "catalog.pdf")
+
         rows: list[dict] = []
-        for i, path in enumerate(files):
-            if file_cb is not None:
-                file_cb(i, len(files), path.name)
-            try:
-                result = self.process(path, inference, postprocess)
-                self.export(result, export, display, out_dir=output_dir / path.stem)
-                rows.append({
-                    "file": path.name,
-                    "path": str(path),
-                    "out_dir": str(output_dir / path.stem),
-                    "status": "ok",
-                    "width": result.width,
-                    "height": result.height,
-                    "georeferenced": result.georef is not None,
-                    "components": result.n_components,
-                    "centerlines": len(result.polylines_out),
-                    "fg_fraction": round(result.fg_fraction, 5),
-                    "seconds": round(result.inference_seconds + result.postprocess_seconds, 1),
-                })
-            except Exception as exc:
-                logger.exception("Batch item failed: %s", path.name)
-                rows.append({
-                    "file": path.name,
-                    "path": str(path),
-                    "out_dir": str(output_dir / path.stem),
-                    "status": f"failed: {exc}",
-                    "width": 0, "height": 0, "georeferenced": False,
-                    "components": 0, "centerlines": 0,
-                    "fg_fraction": 0.0, "seconds": 0.0,
-                })
+        try:
+            for i, path in enumerate(files):
+                if file_cb is not None:
+                    file_cb(i, len(files), path.name)
+                try:
+                    result = self.process(path, inference, postprocess)
+                    self.export(result, export, display, out_dir=output_dir / path.stem)
+                    if catalog is not None:
+                        fig = render_plate_figure(
+                            result.image, result.mask, result.polylines_px,
+                            result.georef, label=path.stem,
+                            site=export.plate_site, note=export.plate_note,
+                            model_name=self.engine.spec.key,
+                            overlay_opacity=min(display.overlay_opacity, 0.4))
+                        if fig is not None:
+                            catalog.savefig(fig)
+                            plt.close(fig)
+                            catalog_pages += 1
+                    rows.append({
+                        "file": path.name,
+                        "path": str(path),
+                        "out_dir": str(output_dir / path.stem),
+                        "status": "ok",
+                        "width": result.width,
+                        "height": result.height,
+                        "georeferenced": result.georef is not None,
+                        "components": result.n_components,
+                        "centerlines": len(result.polylines_out),
+                        "fg_fraction": round(result.fg_fraction, 5),
+                        "seconds": round(result.inference_seconds + result.postprocess_seconds, 1),
+                    })
+                except Exception as exc:
+                    logger.exception("Batch item failed: %s", path.name)
+                    rows.append({
+                        "file": path.name,
+                        "path": str(path),
+                        "out_dir": str(output_dir / path.stem),
+                        "status": f"failed: {exc}",
+                        "width": 0, "height": 0, "georeferenced": False,
+                        "components": 0, "centerlines": 0,
+                        "fg_fraction": 0.0, "seconds": 0.0,
+                    })
+        finally:
+            # Close the combined catalog even on cancel; drop it when empty.
+            if catalog is not None:
+                catalog.close()
+                if catalog_pages:
+                    logger.info("Catalog written: %s (%d pages)",
+                                output_dir / "catalog.pdf", catalog_pages)
+                else:
+                    (output_dir / "catalog.pdf").unlink(missing_ok=True)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         summary_path = output_dir / "batch_summary.json"

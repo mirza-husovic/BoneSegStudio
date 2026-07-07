@@ -128,22 +128,12 @@ class Studio:
 
     def set_image(self, path: Path) -> None:
         """Load an image from disk and precompute its edit-res JPEG."""
+        # read_image applies any GCP sidecar, so plain photos come back
+        # georeferenced here, in batch and in batch-reopen alike.
         img, georef = read_image(path)
         self.source_path = path
         self.image = img
         self.georef = georef
-        # A GCP sidecar (written by /api/georef) re-applies user
-        # georeferencing on every reopen of a plain photo.
-        if self.georef is None:
-            sidecar = gcps_sidecar_path(path)
-            if sidecar.is_file():
-                try:
-                    data = json.loads(sidecar.read_text(encoding="utf-8"))
-                    g, _res, rms = georef_from_gcps(data["gcps"], data.get("epsg"))
-                    self.georef = g
-                    logger.info("GCP sidecar applied: %s (rms %.3f m)", sidecar.name, rms)
-                except Exception:
-                    logger.exception("Ignoring unreadable GCP sidecar %s", sidecar)
         self.result = None
         self.mask_basis = None
         self.cl_add = None

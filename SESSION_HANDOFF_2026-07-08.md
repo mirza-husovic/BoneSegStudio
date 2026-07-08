@@ -71,9 +71,26 @@ Ako nešto pođe po zlu: `git log --oneline` + `git checkout <tag/commit> -- .`
    piše `<stem>_photo.tif`. Bez georeference: preskočen + `note` u
    odgovoru koji UI pokaže kao toast/status.
 
+9. **Parser fix (user report)**: total-station red s KODOM na kraju
+   (`1,576362.2191,5016382.8409,229.3286,GR30`) se odbijao — sad se
+   koordinate čitaju iz VODEĆEG niza brojeva, sve nakon prvog
+   ne-brojčanog tokena (kod/opis) se ignorira. Regresijski test s točnim
+   sadržajem korisnikovog fajla.
+10. **Fotka u DXF-u (CAD underlay)**: `_embed_dxf_photo()` u writers.py —
+    per-grave DXF sadrži IMAGE entitet na layeru PHOTO s EGZAKTNIM
+    per-pixel u/v vektorima iz affine (insert=T*(0,h), u=(a,d),
+    v=(-b,-e)); fotka se KOPIRA uz DXF (relativna referenca → folder
+    prenosiv) pa i obični AutoCAD/LT i BricsCAD otvore fotku ispod
+    vektora bez Map 3D-a. Radi i u pixel modu ((0,-h), unit u/v).
+    IMAGE se piše PRVI (ostaje ispod), greška nikad ne ruši vektorski
+    export. master.dxf NEMA image (verificirano). NB: broj entiteta u
+    smoke [7/7] varira 24↔25 zbog poznate nedeterminističke
+    skeletonizacije, nije bug.
+
 Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
 `python tests/test_georef_fit.py` (i auto-assign + swap detekcija),
-`python tests/test_gcp_parse.py` (novo), `python tests/test_plate.py`.
+`python tests/test_gcp_parse.py` (novo), `python tests/test_dxf_image.py`
+(novo), `python tests/test_plate.py`.
 
 ## Kako verificirati izmjene na ovom stroju
 

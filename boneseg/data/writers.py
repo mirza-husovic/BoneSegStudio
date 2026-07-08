@@ -14,6 +14,8 @@ user's existing QGIS workflow):
 from __future__ import annotations
 
 import json
+import math
+import shutil
 from pathlib import Path
 from typing import Sequence
 
@@ -183,17 +185,65 @@ def save_geojson(
     return out_path
 
 
+def _embed_dxf_photo(doc, msp, image_path: Path, image_size: tuple[int, int],
+                     georef: GeoRef | None, dxf_path: Path) -> None:
+    """Attach the photo as a DXF IMAGE entity on layer PHOTO, so ANY CAD
+    (plain AutoCAD/LT included — no Map 3D needed) opens the drawing with
+    the photo already sitting under the vectors.
+
+    The photo file is copied NEXT TO the DXF and referenced by bare
+    filename, keeping the export folder self-contained (relative image
+    references resolve wherever the folder is moved).
+
+    Geometry: the IMAGE entity stores the world position of the image's
+    LOWER-LEFT corner plus per-pixel u (column) and v (row-upward)
+    vectors. Our affine maps (col, row-DOWN) -> world, so with image
+    height h:  insert = T*(0, h),  u = (a, d),  v = (-b, -e) — exact for
+    any rotation/shear the GCP fit produced. Without a georeference the
+    vectors are in QGIS-pixel coordinates (Y negated), so the photo goes
+    to insert (0, -h) with unit u/v — same convention, same overlay.
+    """
+    w, h = int(image_size[0]), int(image_size[1])
+    target = dxf_path.parent / image_path.name
+    if target.resolve() != image_path.resolve():
+        shutil.copyfile(image_path, target)
+    if georef is not None:
+        t = georef.transform
+        ix, iy = t * (0.0, float(h))
+        u = (t.a, t.d)
+        v = (-t.b, -t.e)
+    else:
+        ix, iy = 0.0, -float(h)
+        u, v = (1.0, 0.0), (0.0, 1.0)
+
+    doc.layers.add("PHOTO", color=8)  # grey
+    image_def = doc.add_image_def(filename=target.name, size_in_pixel=(w, h))
+    img = msp.add_image(
+        image_def=image_def, insert=(ix, iy, 0.0),
+        size_in_units=(w * math.hypot(*u), h * math.hypot(*v)),
+        dxfattribs={"layer": "PHOTO"})
+    # add_image assumes axis-aligned uniform pixels; overwrite with the
+    # exact per-pixel vectors so rotation/shear from the GCP fit is kept.
+    img.dxf.u_pixel = (u[0], u[1], 0.0)
+    img.dxf.v_pixel = (v[0], v[1], 0.0)
+    logger.info("Photo embedded in DXF: %s (%dx%d px)", target.name, w, h)
+
+
 def save_dxf(
     rings: Sequence[Polyline],
     centerlines: Sequence[Polyline],
     out_path: Path,
     georef: GeoRef | None,
+    image_path: Path | None = None,
+    image_size: tuple[int, int] | None = None,
 ) -> Path | None:
     """Write outlines + centerlines as a DXF for direct CAD ingestion.
 
     Same layer convention as predict.py:
       BONE_OUTLINE    — closed LWPOLYLINEs (predicted outline polygons)
       BONE_CENTERLINE — open LWPOLYLINEs (smoothed medial-axis lines)
+      PHOTO           — the source photo as an IMAGE underlay (optional,
+                        when ``image_path``+``image_size`` are given)
 
     Coordinates are identical to the GeoJSON outputs (input CRS when
     georeferenced, else QGIS-pixel with Y negated). AutoCAD/BricsCAD open
@@ -210,6 +260,15 @@ def save_dxf(
     doc.layers.add("BONE_CENTERLINE", color=4)   # cyan
     doc.header["$INSUNITS"] = 6 if georef is not None else 0  # 6 = meters
     msp = doc.modelspace()
+
+    # Image first: entities draw in file order, so the photo stays UNDER
+    # the vectors in viewers that ignore draw-order tables.
+    if image_path is not None and image_size is not None:
+        try:
+            _embed_dxf_photo(doc, msp, Path(image_path), image_size,
+                             georef, out_path)
+        except Exception:
+            logger.exception("DXF photo underlay failed (vectors unaffected)")
 
     for ring in rings:
         if len(ring) >= 3:

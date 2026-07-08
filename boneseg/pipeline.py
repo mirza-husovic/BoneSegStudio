@@ -346,8 +346,12 @@ class BonePipeline:
                 json.dump(rings_to_geojson_dict(result.rings_out, result.georef), f)
             written.append(polygons_path)
         if export.save_dxf:
+            # The photo rides along as an IMAGE underlay (copied next to
+            # the DXF) so any CAD opens it already under the vectors.
             dxf_path = save_dxf(result.rings_out, result.polylines_out,
-                                out_dir / f"{stem}.dxf", result.georef)
+                                out_dir / f"{stem}.dxf", result.georef,
+                                image_path=result.source_path,
+                                image_size=(result.width, result.height))
             if dxf_path is not None:
                 written.append(dxf_path)
         if export.save_svg:

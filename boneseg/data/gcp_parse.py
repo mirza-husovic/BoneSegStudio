@@ -76,27 +76,31 @@ def _classify(tokens: list[str]) -> dict | None:
 
     # Leading non-numeric token is always the id.
     if nums[0] is None:
-        rest = [v for v in nums[1:] if v is not None]
-        if len(rest) >= 2:
-            return {"id": tokens[0], "e": rest[0], "n": rest[1]}
+        rid, rest_toks, rest_nums = tokens[0], tokens[1:], nums[1:]
+    else:
+        rid, rest_toks, rest_nums = None, tokens, nums
+
+    # Take the leading run of numeric tokens; anything after the first
+    # non-numeric one is a point code / description and is ignored —
+    # total-station exports commonly end rows with a code column
+    # ("1,576362.2191,5016382.8409,229.3286,GR30").
+    prefix: list[float] = []
+    for v in rest_nums:
+        if v is None:
+            break
+        prefix.append(v)
+    if len(prefix) < 2:
         return None
 
-    numeric = [v for v in nums if v is not None]
-    if len(numeric) < 2 or len(numeric) != len(nums):
-        # Mixed junk beyond a leading id is not a point row.
-        return None
-    if len(numeric) == 2:
-        return {"id": "", "e": numeric[0], "n": numeric[1]}
-    if len(numeric) == 3:
-        # "ID E N" vs "E N Z": decided by whether token 0 looks like an id.
-        if _looks_like_id(tokens[0]):
-            return {"id": tokens[0], "e": numeric[1], "n": numeric[2]}
-        return {"id": "", "e": numeric[0], "n": numeric[1]}
-    # 4+ numeric tokens: convention "ID E N Z ..." unless the first value
-    # cannot be an id (then "E N Z ..." without one).
-    if _looks_like_id(tokens[0]):
-        return {"id": tokens[0], "e": numeric[1], "n": numeric[2]}
-    return {"id": "", "e": numeric[0], "n": numeric[1]}
+    if rid is not None:
+        return {"id": rid, "e": prefix[0], "n": prefix[1]}
+    if len(prefix) == 2:
+        return {"id": "", "e": prefix[0], "n": prefix[1]}
+    # 3+ leading numbers: "ID E N [Z]" when the first token plausibly IS
+    # an id (short integer), else "E N Z ..." without one.
+    if _looks_like_id(rest_toks[0]):
+        return {"id": rest_toks[0], "e": prefix[1], "n": prefix[2]}
+    return {"id": "", "e": prefix[0], "n": prefix[1]}
 
 
 def _split_line(line: str) -> list[str]:

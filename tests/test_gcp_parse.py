@@ -41,6 +41,23 @@ pts = parse_gcp_text("1,457123.45,4795321.98")
 assert pts[0]["id"] == "1" and pts[0]["n"] == 4795321.98
 print("comma-separated OK")
 
+# --- REAL user file (2026-07-08): ID,E,N,Z,CODE — trailing point code ---
+pts = parse_gcp_text("""1,576362.2191,5016382.8409,229.3286,GR30
+2,576363.1558,5016383.1340,229.3585,GR30
+3,576363.0224,5016383.5597,229.2969,GR30
+4,576362.0796,5016383.2474,229.2673,GR30
+5,576362.3657,5016383.0922,229.3380,GR30H
+""")
+assert len(pts) == 5, pts
+assert pts[0] == {"id": "1", "e": 576362.2191, "n": 5016382.8409}
+assert pts[4]["id"] == "5" and pts[4]["n"] == 5016383.0922
+print("ID,E,N,Z,CODE trailing code OK")
+
+# --- code column with whitespace separators + id-with-letters ---
+pts = parse_gcp_text("T5 457127.99 4795320.01 152.4 GROB12 vrh femura")
+assert pts[0] == {"id": "T5", "e": 457127.99, "n": 4795320.01}
+print("trailing description OK")
+
 # --- header line skipped naturally ---
 pts = parse_gcp_text("ID;E;N\n1;457123.45;4795321.98")
 assert len(pts) == 1 and pts[0]["id"] == "1"

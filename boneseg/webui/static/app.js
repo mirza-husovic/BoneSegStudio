@@ -1629,7 +1629,8 @@ $("#gcpapply").addEventListener("click", async () => {
       res.residuals_m.map((r, i) => `#${i + 1} ${(r * 100).toFixed(1)}`).join(", ") + " cm." +
       (res.matched ? "<br>Points auto-matched — table shows the pairing." : "") +
       (res.auto_swapped ? "<br>⚠ E/N were SWAPPED in your points — corrected automatically (geodetic Y/X)." : "") +
-      (res.ambiguous ? "<br>⚠ The point layout is symmetric — a different pairing fits almost as well. Verify in QGIS." : "") +
+      (res.ambiguous ? "<br>⚠ Symmetric point layout — pairing resolved by least distortion + click order. " +
+                       "To be safe: click the points in file order, or click one extra (5th) point. Verify in QGIS." : "") +
       (res.mode === "homography"
         ? "<br>Oblique photo detected — perspective corrected. Vectors are exact; " +
           "for the photo in GIS/CAD use the <b>GeoTIFF photo</b> / DXF export (rectified, no stretching). " +

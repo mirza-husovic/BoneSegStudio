@@ -218,6 +218,10 @@ def auto_assign_gcps(
     world points are mirrored — i.e. E and N are swapped in the file
     (the classic geodetic Y/X trap); the caller swaps and retries.
 
+    Statistically tied candidates (symmetric layouts — the classic
+    4-corner rectangle) are tie-broken by least distortion, then by click
+    order; see the comment at the ranking below.
+
     Returns ``(assignment, rms_m, mirrored, second_rms_m)`` where
     ``assignment[i]`` is the index into ``points`` matched to
     ``clicks[i]`` and ``second_rms_m`` is the RMS of the best DIFFERENT
@@ -283,7 +287,19 @@ def auto_assign_gcps(
             used.add(pick)
         return assign
 
-    scored: dict[tuple[int, ...], tuple[float, bool]] = {}
+    def _fit(key: tuple[int, ...]):
+        gcps = [{"px": c[i, 0], "py": c[i, 1],
+                 "e": w[j, 0], "n": w[j, 1]} for i, j in enumerate(key)]
+        return fit_affine_gcps(gcps)
+
+    def _aniso(fit) -> float:
+        """Distortion of the fitted map: ratio of the affine's singular
+        values (1 = isotropic nadir look, big = photo squashed)."""
+        sv = np.linalg.svd(np.array([[fit.a, fit.b], [fit.d, fit.e]]),
+                           compute_uv=False)
+        return float(sv[0] / sv[1]) if sv[1] > 0 else float("inf")
+
+    scored: dict[tuple[int, ...], tuple[float, bool, float]] = {}
     for k in order:
         assign = _greedy(int(k))
         if assign is None:
@@ -291,21 +307,43 @@ def auto_assign_gcps(
         key = tuple(assign)
         if key in scored:
             continue
-        gcps = [{"px": c[i, 0], "py": c[i, 1],
-                 "e": w[j, 0], "n": w[j, 1]} for i, j in enumerate(assign)]
-        fit, _res, rms = fit_affine_gcps(gcps)
+        fit, _res, rms = _fit(key)
         det = fit.a * fit.e - fit.b * fit.d
-        scored[key] = (rms, det > 0)
+        scored[key] = (rms, det > 0, _aniso(fit))
 
     if not scored:
         raise ValueError("Auto-matching failed — no consistent assignment found.")
     ranked = sorted(scored.items(), key=lambda kv: kv[1][0])
-    (best_key, (best_rms, mirrored)) = ranked[0]
-    second = next((rms for key, (rms, mir) in ranked[1:] if mir == mirrored),
-                  float("inf"))
-    logger.info("GCP auto-match: %d clicks vs %d points, rms %.3f m "
-                "(runner-up %.3f m)%s", n, m, best_rms,
-                second if math.isfinite(second) else -1.0,
+    best_rms0 = ranked[0][1][0]
+    best_mir = ranked[0][1][1]
+
+    # SYMMETRIC LAYOUTS (the common 4-corner rectangle!): several pairings
+    # fit within measurement noise — an affine maps a rectangle onto any
+    # rotated/cycled version of itself EXACTLY, so RMS cannot decide.
+    # Tie-break among the statistically tied candidates:
+    #   1. least distortion — a wrong (cycled) pairing only fits by
+    #      squashing the photo by aspect² (the "stretched" QGIS look),
+    #      the true pairing is the most isotropic one;
+    #   2. RMS in 5 mm buckets — a genuinely better fit still wins;
+    #   3. click order — users overwhelmingly click points in file order,
+    #      so among truly equal candidates (a 180° rotation of a perfect
+    #      rectangle is geometrically indistinguishable) prefer the
+    #      identity-like assignment.
+    near = [(key, rms, an) for key, (rms, mir, an) in ranked
+            if mir == best_mir and rms <= max(2 * best_rms0, best_rms0 + 0.02)]
+    near.sort(key=lambda t: (round(t[2], 1),
+                             round(t[1] / 0.005),
+                             -sum(1 for i, j in enumerate(t[0]) if i == j),
+                             t[1]))
+    best_key, best_rms, aniso = near[0]
+    mirrored = best_mir
+    second = near[1][1] if len(near) > 1 else next(
+        (rms for key, (rms, mir, _a) in ranked
+         if mir == mirrored and key != best_key), float("inf"))
+    logger.info("GCP auto-match: %d clicks vs %d points, rms %.3f m, "
+                "foreshortening x%.2f (runner-up %.3f m, %d tied)%s",
+                n, m, best_rms, aniso,
+                second if math.isfinite(second) else -1.0, len(near),
                 " — MIRRORED (E/N swapped?)" if mirrored else "")
     return list(best_key), best_rms, mirrored, second
 

@@ -124,6 +124,17 @@ Ako nešto pođe po zlu: `git log --oneline` + `git checkout <tag/commit> -- .`
     točaka razbija simetriju i gasi "ambiguous". UI poruka objašnjava
     tie-break + savjetuje 5. točku.
 
+13. **CAD fotka — pravi uzrok nađen i riješen**: XREF paleta pokazala
+    IMAGEDEF "Unreferenced" → ezdxf defaulta ključ ACAD_IMAGE_DICT-a na
+    FILENAME (apsolutna putanja s `\` `:` `.`) što NIJE valjano
+    simboličko ime → AutoCAD odbaci definiciju, raster se nikad ne učita
+    (samo okvir). Fix: eksplicitni `name="<STEM>_PHOTO"` u
+    `add_image_def`. **Pouka: kod ezdxf slika UVIJEK zadati `name`.**
+14. **Plate PDF = drawing stil po defaultu** (crne centerline na
+    bijelom, bez fotke; `style="photo"` čuva stari izgled) — user
+    zahtjev; mjerilo/mjerka/N/title block nepromijenjeni; vrijedi i za
+    batch catalog.pdf.
+
 Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
 `python tests/test_georef_fit.py` (auto-assign + swap + homografija +
 rectify grid + GR30 simetrija), `python tests/test_gcp_parse.py`,

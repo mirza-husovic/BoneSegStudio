@@ -40,6 +40,7 @@ from boneseg.data import (
     save_geojson,
     save_mask_raster,
     save_overlay_png,
+    save_photo_geotiff,
     save_plate_pdf,
     save_skeleton_png,
     save_svg,
@@ -354,6 +355,13 @@ class BonePipeline:
                 save_svg(result.polylines_px, out_dir / f"{stem}_centerlines.svg",
                          width=result.width, height=result.height)
             )
+        if export.save_geotiff:
+            # Writes only when a georeference exists (GCPs or geo input);
+            # otherwise logs + skips — a pixel-space GeoTIFF is meaningless.
+            gt_path = save_photo_geotiff(
+                result.image, out_dir / f"{stem}_photo.tif", result.georef)
+            if gt_path is not None:
+                written.append(gt_path)
         if export.save_plate:
             plate_path = save_plate_pdf(
                 result.image, result.mask, result.polylines_px, result.georef,

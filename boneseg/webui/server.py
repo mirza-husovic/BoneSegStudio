@@ -66,7 +66,8 @@ logger = get_logger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 
-EXPORT_KEYS = ("mask", "overlay", "skeleton", "geojson", "dxf", "svg", "plate")
+EXPORT_KEYS = ("mask", "overlay", "skeleton", "geojson", "dxf", "svg", "plate",
+               "geotiff")
 
 
 class Cancelled(Exception):
@@ -230,6 +231,7 @@ def _export_from(payload: dict) -> ExportSettings:
         save_dxf="dxf" in choices,
         save_svg="svg" in choices,
         save_plate="plate" in choices,
+        save_geotiff="geotiff" in choices,
         append_master=bool(payload.get("append_master", False)),
         plate_site=str(payload.get("plate_site", "")).strip(),
         plate_note=str(payload.get("plate_note", "")).strip(),
@@ -666,7 +668,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             exp = _export_from(payload)
             if not any([exp.save_mask, exp.save_overlay, exp.save_skeleton,
                         exp.save_geojson, exp.save_dxf, exp.save_svg,
-                        exp.append_master]):
+                        exp.save_plate, exp.save_geotiff, exp.append_master]):
                 raise HTTPException(400, "Select at least one export format.")
             display = DisplaySettings(overlay_opacity=float(payload.get("opacity", 0.55)))
             target = Path(exp.output_dir) / state.result.source_path.stem
@@ -674,8 +676,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 written = state.pipeline.export(state.result, exp, display, out_dir=target)
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
-            return {"files": [str(p) for p in written], "target": str(target),
+            resp = {"files": [str(p) for p in written], "target": str(target),
                     "master": str(Path(exp.output_dir) / "master.dxf") if exp.append_master else None}
+            if exp.save_geotiff and state.result.georef is None:
+                resp["note"] = ("GeoTIFF photo skipped — the image has no "
+                                "georeference yet (use the GCP tool, key G).")
+            return resp
         finally:
             state.lock.release()
 
@@ -759,6 +765,35 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     # ------------------------------------------------------------------ #
     # GCP georeferencing                                                  #
     # ------------------------------------------------------------------ #
+    @app.post("/api/gcp_points")
+    async def gcp_points(file: UploadFile | None = File(None),
+                         text: str | None = Form(None)):
+        """Parse a point file (total-station TXT, CSV, Excel) or pasted
+        text into GCP points. Pure parsing — no state is touched."""
+        from boneseg.data.gcp_parse import (
+            looks_like_lonlat,
+            parse_gcp_file,
+            parse_gcp_text,
+        )
+        if file is not None:
+            data = await file.read()
+            if len(data) > 5 * 1024 * 1024:
+                raise HTTPException(400, "Point file too large (>5 MB) — "
+                                         "is this really a coordinate list?")
+            try:
+                pts = parse_gcp_file(file.filename or "points.txt", data)
+            except RuntimeError as exc:
+                raise HTTPException(400, str(exc))
+        elif text and text.strip():
+            pts = parse_gcp_text(text)
+        else:
+            raise HTTPException(400, "Provide a point file or pasted text.")
+        if not pts:
+            raise HTTPException(400, "No points recognized — expected "
+                                     "“ID E N [Z]” per line/row.")
+        return {"points": pts, "n": len(pts),
+                "lonlat_warning": looks_like_lonlat(pts)}
+
     @app.post("/api/georef")
     async def georef_apply(payload: dict = Body(...)):
         """Fit an affine from user GCPs (edit-res px + surveyed E/N), apply
@@ -792,16 +827,56 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             except ValueError:
                 raise HTTPException(400, f"EPSG must be a number, got: {epsg_raw}")
             scale = state.edit_scale
-            gcps = []
-            for g in payload.get("gcps") or []:
+            extras: dict = {}
+
+            if payload.get("auto"):
+                # Order-free mode: clicks + a point LIST (possibly larger —
+                # extra surveyed points that are not in the frame are fine).
+                # auto_assign_gcps finds the pairing geometrically; a
+                # mirrored best fit means E/N are swapped in the source, so
+                # swap and retry once, reporting the correction to the UI.
+                from boneseg.data.georef_fit import auto_assign_gcps
                 try:
-                    e, n = float(g["e"]), float(g["n"])
+                    clicks = [(float(c["px"]) / scale, float(c["py"]) / scale)
+                              for c in payload.get("clicks") or []]
+                except (KeyError, TypeError, ValueError):
+                    raise HTTPException(400, "Every click needs px and py.")
+                raw_pts = payload.get("points") or []
+                try:
+                    pts = [(float(p["e"]), float(p["n"])) for p in raw_pts]
                 except (KeyError, TypeError, ValueError):
                     raise HTTPException(400, "Every point needs numeric E and N.")
+                ids = [str(p.get("id", "")) for p in raw_pts]
                 if swap:
-                    e, n = n, e
-                gcps.append({"px": float(g["px"]) / scale,
-                             "py": float(g["py"]) / scale, "e": e, "n": n})
+                    pts = [(n, e) for e, n in pts]
+                try:
+                    assign, arms, mirrored, second = auto_assign_gcps(clicks, pts)
+                    if mirrored:
+                        pts = [(n, e) for e, n in pts]
+                        assign, arms, mirrored, second = auto_assign_gcps(clicks, pts)
+                        extras["auto_swapped"] = True
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc))
+                # Ambiguity: a runner-up pairing that fits almost as well
+                # (symmetric point layout) — the user must eyeball the map.
+                extras["ambiguous"] = bool(second < max(2 * arms, 0.10))
+                gcps = [{"px": cx, "py": cy,
+                         "e": pts[j][0], "n": pts[j][1], "id": ids[j]}
+                        for (cx, cy), j in zip(clicks, assign)]
+                extras["matched"] = [
+                    {"id": ids[j], "e": pts[j][0], "n": pts[j][1]}
+                    for j in assign]
+            else:
+                gcps = []
+                for g in payload.get("gcps") or []:
+                    try:
+                        e, n = float(g["e"]), float(g["n"])
+                    except (KeyError, TypeError, ValueError):
+                        raise HTTPException(400, "Every point needs numeric E and N.")
+                    if swap:
+                        e, n = n, e
+                    gcps.append({"px": float(g["px"]) / scale,
+                                 "py": float(g["py"]) / scale, "e": e, "n": n})
             try:
                 georef2, residuals, rms = georef_from_gcps(gcps, epsg)
             except (ValueError, RuntimeError) as exc:
@@ -822,7 +897,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             return {**state.result_summary(),
                     "residuals_m": [round(r, 3) for r in residuals],
                     "rms_m": round(rms, 3),
-                    "world_files": world}
+                    "world_files": world,
+                    **extras}
         finally:
             state.lock.release()
 

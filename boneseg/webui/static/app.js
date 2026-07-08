@@ -1277,7 +1277,11 @@ window.addEventListener("drop", (e) => {
   // user misses the dashed zone.
   if (batchPanelOpen()) { stageBatchDrop(e.dataTransfer); return; }
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) openImage(f);
+  if (!f) return;
+  // A coordinate file dropped while georeferencing loads GCP points, even
+  // if the user misses the panel's dashed zone.
+  if (S.tool === "gcp" && GCP_FILE_RE.test(f.name)) { gcpLoadFile(f); return; }
+  openImage(f);
 });
 
 $("#runbtn").addEventListener("click", async () => {
@@ -1414,7 +1418,9 @@ $("#exportbtn").addEventListener("click", async () => {
     const st = $("#exportstatus");
     st.innerHTML = `Exported <b>${res.files.length}</b> file(s) to <code>${res.target}</code> ` +
       `<a href="#" id="revealout">open folder</a>` +
-      (res.master ? `<br>Master updated: <code>${res.master}</code>` : "");
+      (res.master ? `<br>Master updated: <code>${res.master}</code>` : "") +
+      (res.note ? `<br>⚠ ${res.note}` : "");
+    if (res.note) toast(res.note, "error", 9000);
     $("#revealout").addEventListener("click", (e) => {
       e.preventDefault();
       apiPost("/api/reveal", { path: res.target }).catch((err) => toast(err.message, "error"));
@@ -1461,33 +1467,61 @@ $("#trainbtn").addEventListener("click", async () => {
 /* ------------------------------------------------------------------ */
 let gcps = [];       // {px, py, e, n, id} — px/py in edit-image coords
 let gcpQueue = [];   // parsed-but-unclicked points {id, e, n}
+let gcpPoints = [];  // ALL parsed file/paste points — auto-match uses these,
+                     // so click order (and extra unclicked points) don't matter
 
-function gcpParseText(text) {
-  // Accepts "ID E N [Z]" or "E N" per line; separators = whitespace or ';',
-  // commas are decimal separators when Croatian-style ("4795123,45").
-  const pts = [];
-  for (let raw of text.split(/\r?\n/)) {
-    raw = raw.trim();
-    if (!raw || raw.startsWith("#") || raw.startsWith("//")) continue;
-    let toks = raw.split(/[;\s]+/);
-    if (toks.length === 1 && raw.includes(",")) toks = raw.split(",");
-    toks = toks.map((t) => /^-?\d+,\d+$/.test(t) ? t.replace(",", ".") : t)
-               .filter((t) => t !== "");
-    const num = toks.map(parseFloat);
-    if (toks.length >= 3 && !Number.isNaN(num[1]) && !Number.isNaN(num[2])) {
-      pts.push({ id: toks[0], e: num[1], n: num[2] });
-    } else if (toks.length === 2 && !Number.isNaN(num[0]) && !Number.isNaN(num[1])) {
-      pts.push({ id: "", e: num[0], n: num[1] });
-    }
+/* Point parsing lives on the SERVER (boneseg/data/gcp_parse.py) so txt,
+   CSV and Excel all go through one parser; the UI just uploads. */
+async function gcpLoadPoints(formData) {
+  const r = await fetch("/api/gcp_points", { method: "POST", body: formData });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  const res = await r.json();
+  gcpPoints = res.points;
+  gcpQueue = res.points.slice();
+  gcpQueueInfo();
+  if (res.lonlat_warning) {
+    toast("These look like lat/lon DEGREES — georeferencing needs projected " +
+          "metric coordinates (e.g. HTRS96/TM). Check the file and the EPSG.",
+          "error", 12000);
   }
-  return pts;
+  toast(`${res.n} point(s) loaded — click them on the photo in ANY order.`, "ok", 7000);
 }
+
+async function gcpLoadFile(file) {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  try { await gcpLoadPoints(fd); } catch (err) {
+    toast(`Could not read point file: ${err.message}`, "error", 9000);
+  }
+}
+
+const GCP_FILE_RE = /\.(txt|csv|tsv|dat|asc|xlsx|xlsm)$/i;
+$("#gcpbrowse").addEventListener("click", (e) => { e.preventDefault(); $("#gcpfile").click(); });
+$("#gcpdrop").addEventListener("click", () => $("#gcpfile").click());
+$("#gcpfile").addEventListener("change", (e) => {
+  if (e.target.files[0]) gcpLoadFile(e.target.files[0]);
+  e.target.value = "";
+});
+$("#gcpdrop").addEventListener("dragover", (e) => {
+  e.preventDefault(); e.stopPropagation(); $("#gcpdrop").classList.add("drag");
+});
+$("#gcpdrop").addEventListener("dragleave", () => $("#gcpdrop").classList.remove("drag"));
+$("#gcpdrop").addEventListener("drop", (e) => {
+  e.preventDefault(); e.stopPropagation();
+  $("#gcpdrop").classList.remove("drag");
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) gcpLoadFile(f);
+});
 
 function gcpQueueInfo() {
+  const auto = $("#gcpauto").checked && gcpPoints.length >= 3;
   $("#gcpqueue").textContent = gcpQueue.length
-    ? `${gcpQueue.length} point(s) loaded — next click places “${gcpQueue[0].id || gcpQueue[0].e}”.`
+    ? (auto
+        ? `${gcpPoints.length} point(s) loaded — click each on the photo, any order (auto-match on Apply).`
+        : `${gcpQueue.length} point(s) left — next click places “${gcpQueue[0].id || gcpQueue[0].e}”.`)
     : "";
 }
+$("#gcpauto").addEventListener("change", gcpQueueInfo);
 
 function gcpAddPoint(x, y) {
   const q = gcpQueue.shift();
@@ -1501,11 +1535,12 @@ function renderGcpTable() {
   if (!gcps.length) { $("#gcptablewrap").innerHTML = ""; return; }
   const rows = gcps.map((g, i) =>
     `<tr><td>${i + 1}</td>` +
+    `<td class="gcpid" title="${g.id || ""}">${g.id || ""}</td>` +
     `<td><input data-i="${i}" data-f="e" value="${g.e}" spellcheck="false"></td>` +
     `<td><input data-i="${i}" data-f="n" value="${g.n}" spellcheck="false"></td>` +
     `<td><button class="gcpdel" data-i="${i}" title="Remove">✕</button></td></tr>`).join("");
   $("#gcptablewrap").innerHTML =
-    `<table><tr><th>#</th><th>E (easting)</th><th>N (northing)</th><th></th></tr>${rows}</table>`;
+    `<table><tr><th>#</th><th>ID</th><th>E (easting)</th><th>N (northing)</th><th></th></tr>${rows}</table>`;
 }
 
 $("#gcptablewrap").addEventListener("input", (e) => {
@@ -1520,16 +1555,20 @@ $("#gcptablewrap").addEventListener("click", (e) => {
   requestDraw();
 });
 
-$("#gcpparse").addEventListener("click", () => {
-  gcpQueue = gcpParseText($("#gcppaste").value);
-  if (!gcpQueue.length) { toast("No points recognized — expected “ID E N” per line.", "error", 7000); return; }
-  gcpQueueInfo();
-  toast(`${gcpQueue.length} point(s) loaded — now click them on the photo in the same order.`, "ok", 7000);
+$("#gcpparse").addEventListener("click", async () => {
+  const text = $("#gcppaste").value;
+  if (!text.trim()) { toast("Paste the points first (ID E N per line).", "error", 6000); return; }
+  const fd = new FormData();
+  fd.append("text", text);
+  try { await gcpLoadPoints(fd); } catch (err) {
+    toast(`No points recognized: ${err.message}`, "error", 8000);
+  }
 });
 
 function gcpReset(alsoQueue = true) {
   gcps = [];
-  if (alsoQueue) { gcpQueue = []; $("#gcppaste").value = ""; }
+  if (alsoQueue) { gcpQueue = []; gcpPoints = []; $("#gcppaste").value = ""; }
+  else { gcpQueue = gcpPoints.slice(); }  // same grave file, next photo
   gcpQueueInfo();
   renderGcpTable();
   $("#gcpstatus").textContent = "";
@@ -1540,29 +1579,57 @@ $("#gcpreset").addEventListener("click", () => gcpReset(true));
 
 $("#gcpapply").addEventListener("click", async () => {
   if (gcps.length < 3) { toast("Place at least 3 points on the photo first.", "error", 6000); return; }
-  for (const g of gcps) {
-    if (String(g.e).trim() === "" || String(g.n).trim() === "" ||
-        Number.isNaN(parseFloat(g.e)) || Number.isNaN(parseFloat(g.n))) {
-      toast("Every point needs numeric E and N coordinates.", "error", 6000);
+  // Auto-match: with a loaded point list the pairing is found geometrically
+  // on the server, so neither the click order nor the file order matters.
+  const auto = $("#gcpauto").checked && gcpPoints.length >= 3;
+  let payload;
+  if (auto) {
+    if (gcpPoints.length < gcps.length) {
+      toast(`You clicked ${gcps.length} spots but the file has only ` +
+            `${gcpPoints.length} points — remove extra clicks (✕).`, "error", 8000);
       return;
     }
+    payload = {
+      auto: true,
+      clicks: gcps.map((g) => ({ px: g.px, py: g.py })),
+      points: gcpPoints.map((p) => ({ id: p.id, e: p.e, n: p.n })),
+    };
+  } else {
+    for (const g of gcps) {
+      if (String(g.e).trim() === "" || String(g.n).trim() === "" ||
+          Number.isNaN(parseFloat(g.e)) || Number.isNaN(parseFloat(g.n))) {
+        toast("Every point needs numeric E and N coordinates (or load a point file and enable auto-match).", "error", 7000);
+        return;
+      }
+    }
+    payload = {
+      gcps: gcps.map((g) => ({ px: g.px, py: g.py, e: parseFloat(g.e), n: parseFloat(g.n) })),
+    };
   }
+  payload.epsg = $("#gcpepsg").value.trim();
+  payload.swap = $("#gcpswap").checked;
   setBusy(true);
   try {
-    const res = await apiPost("/api/georef", {
-      gcps: gcps.map((g) => ({ px: g.px, py: g.py, e: parseFloat(g.e), n: parseFloat(g.n) })),
-      epsg: $("#gcpepsg").value.trim(),
-      swap: $("#gcpswap").checked,
-    });
+    const res = await apiPost("/api/georef", payload);
+    if (res.matched) {
+      // Show which surveyed point each click received.
+      res.matched.forEach((m, i) => {
+        if (gcps[i]) { gcps[i].id = m.id; gcps[i].e = m.e; gcps[i].n = m.n; }
+      });
+      renderGcpTable();
+    }
     applySummary(res);
     updateStats();
     const st = $("#gcpstatus");
     const worst = Math.max(...res.residuals_m);
-    st.className = worst > 0.15 ? "hint bad" : "hint ok";
+    st.className = (worst > 0.15 || res.ambiguous) ? "hint bad" : "hint ok";
     st.innerHTML =
       `Applied — RMS <b>${(res.rms_m * 100).toFixed(1)} cm</b>, per point: ` +
       res.residuals_m.map((r, i) => `#${i + 1} ${(r * 100).toFixed(1)}`).join(", ") + " cm." +
-      (worst > 0.15 ? "<br>⚠ Large residuals — check for a swapped E/N or a mistyped digit."
+      (res.matched ? "<br>Points auto-matched — table shows the pairing." : "") +
+      (res.auto_swapped ? "<br>⚠ E/N were SWAPPED in your points — corrected automatically (geodetic Y/X)." : "") +
+      (res.ambiguous ? "<br>⚠ The point layout is symmetric — a different pairing fits almost as well. Verify in QGIS." : "") +
+      (worst > 0.15 ? "<br>⚠ Large residuals — oblique photo, or a mistyped digit?"
                     : "") +
       (res.world_files.length
         ? `<br>World file written (${res.world_files.join(", ")}) — the photo now opens georeferenced in QGIS.`

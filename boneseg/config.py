@@ -100,6 +100,7 @@ class ExportSettings:
     save_dxf: bool = True
     save_svg: bool = False
     save_plate: bool = False        # A4 catalog plate PDF (scale bar + north arrow)
+    save_geotiff: bool = False      # the PHOTO as GeoTIFF (needs a georeference)
 
     # Merge every exported grave into ONE site-wide GeoJSON pair + DXF
     # (master_*.geojson / master.dxf in output_dir) — see boneseg/data/master.py

@@ -9,6 +9,7 @@ from boneseg.data.writers import (
     save_geojson,
     save_mask_raster,
     save_overlay_png,
+    save_photo_geotiff,
     save_skeleton_png,
     save_svg,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "save_geojson",
     "save_mask_raster",
     "save_overlay_png",
+    "save_photo_geotiff",
     "save_plate_pdf",
     "save_skeleton_png",
     "save_svg",

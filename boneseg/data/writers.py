@@ -68,6 +68,55 @@ def save_mask_raster(mask01: np.ndarray, stem_path: Path, georef: GeoRef | None)
     return out
 
 
+def save_photo_geotiff(img_rgb: np.ndarray, out_path: Path,
+                       georef: GeoRef | None) -> Path | None:
+    """Write the PHOTO itself as a georeferenced GeoTIFF.
+
+    Unlike the world-file sidecar (which georeferences the original JPEG
+    but only as long as the .jgw/.prj travel with it), a GeoTIFF is a
+    single self-contained file — CRS and transform embedded — that any
+    GIS opens correctly on its own.
+
+    JPEG-in-TIFF compression keeps a 24 MP photo at roughly camera-JPEG
+    size (a plain deflate GeoTIFF of the same photo is ~5× larger); tiling
+    plus overviews make QGIS pan/zoom instant. Falls back to deflate if
+    the local GDAL lacks JPEG support. Returns None (with a log) when
+    there is no georeference — a pixel-space GeoTIFF would be meaningless.
+    """
+    if georef is None:
+        logger.warning("GeoTIFF photo skipped: no georeference (set GCPs first)")
+        return None
+    if not HAS_RASTERIO:
+        logger.warning("GeoTIFF photo skipped: rasterio not installed")
+        return None
+    if img_rgb.ndim == 2:
+        img_rgb = np.stack([img_rgb] * 3, axis=-1)
+    h, w = img_rgb.shape[:2]
+    base = dict(driver="GTiff", height=h, width=w, count=3, dtype="uint8",
+                crs=georef.crs, transform=georef.transform,
+                tiled=True, blockxsize=256, blockysize=256)
+    attempts = (dict(compress="jpeg", photometric="ycbcr", jpeg_quality=92),
+                dict(compress="deflate", predictor=2))
+    last_exc: Exception | None = None
+    for extra in attempts:
+        try:
+            with rasterio.open(str(out_path), "w", **base, **extra) as dst:
+                for b in range(3):
+                    dst.write(img_rgb[..., b], b + 1)
+                factors = [f for f in (2, 4, 8, 16) if max(h, w) // f >= 512]
+                if factors:
+                    dst.build_overviews(
+                        factors, rasterio.enums.Resampling.average)
+            logger.info("GeoTIFF photo written: %s (%s)", out_path.name,
+                        extra["compress"])
+            return out_path
+        except Exception as exc:  # e.g. GDAL built without JPEG
+            last_exc = exc
+            logger.warning("GeoTIFF write with %s failed (%s) — trying next",
+                           extra["compress"], exc)
+    raise RuntimeError(f"GeoTIFF photo export failed: {last_exc}")
+
+
 def render_overlay(
     img_rgb: np.ndarray,
     mask01: np.ndarray,

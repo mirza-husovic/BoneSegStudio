@@ -70,4 +70,51 @@ with tempfile.TemporaryDirectory() as td:
             assert abs(getattr(src.transform, k) - getattr(T, k)) < 1e-4, (k, src.transform)
 print("world file round-trip OK (rasterio re-reads identical transform)")
 
+# --- auto-assignment: shuffled points + extras, any click order ---------- #
+from boneseg.data.georef_fit import auto_assign_gcps
+
+rng2 = np.random.default_rng(7)
+click_pts = [(120.0, 90.0), (1500.0, 260.0), (760.0, 1040.0),
+             (340.0, 880.0), (1210.0, 700.0)]
+world = [T * c for c in click_pts]
+# Extra surveyed points that are NOT on the photo + shuffled order.
+extras = [T * (2600.0, 1800.0), T * (-500.0, 2400.0), T * (3000.0, -400.0)]
+pool = [(e + rng2.normal(0, 0.01), n + rng2.normal(0, 0.01))
+        for e, n in world] + list(extras)
+order = rng2.permutation(len(pool))
+shuffled = [pool[i] for i in order]
+truth = {int(np.where(order == i)[0][0]): i for i in range(len(world))}
+
+assign, rms_a, mirrored, second = auto_assign_gcps(click_pts, shuffled)
+assert not mirrored
+for click_i, pool_j in enumerate(assign):
+    assert shuffled[pool_j] == pool[click_i], (click_i, pool_j)
+assert rms_a < 0.05, rms_a
+assert second > 5 * rms_a  # unambiguous layout
+print(f"auto-assign OK (rms={rms_a*100:.1f} cm, runner-up {second:.2f} m)")
+
+# --- swapped E/N is detected as a mirrored best fit ---------------------- #
+swapped = [(n, e) for e, n in shuffled]
+_a, _r, mirrored_sw, _s = auto_assign_gcps(click_pts, swapped)
+assert mirrored_sw, "swapped E/N should look mirrored"
+print("swapped E/N detection OK")
+
+# --- guard rails ---------------------------------------------------------- #
+try:
+    auto_assign_gcps(click_pts[:2], shuffled)
+    raise AssertionError("should have raised (2 clicks)")
+except ValueError:
+    pass
+try:
+    auto_assign_gcps(click_pts, shuffled[:3])
+    raise AssertionError("should have raised (fewer points than clicks)")
+except ValueError:
+    pass
+try:
+    auto_assign_gcps([(0, 0), (100, 0), (200, 0), (300, 0)], shuffled)
+    raise AssertionError("should have raised (collinear clicks)")
+except ValueError:
+    pass
+print("auto-assign guard rails OK")
+
 print("GEOREF FIT TEST PASSED")

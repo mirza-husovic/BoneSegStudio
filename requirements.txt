@@ -43,3 +43,6 @@ ezdxf==1.4.3
 
 # --- catalog plate PDF (optional, like ezdxf: export skipped if missing) ---
 matplotlib==3.10.8
+
+# --- GCP point files from Excel (optional: .xlsx parsing errors politely if missing) ---
+openpyxl==3.1.5

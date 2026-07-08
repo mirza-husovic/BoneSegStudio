@@ -45,8 +45,35 @@ Ako nešto pođe po zlu: `git log --oneline` + `git checkout <tag/commit> -- .`
    `process_folder` akumulira kroz `PdfPages` (zatvara se u `finally`,
    prazan se briše).
 
+6. **GCP fajl s točkama (txt/csv/xlsx)** — `boneseg/data/gcp_parse.py` +
+   `POST /api/gcp_points`; drop-zona i "browse…" u GCP panelu; drop bilo
+   gdje na prozor dok je GCP alat aktivan također radi (routing po
+   ekstenziji). Paste ("Load points") ide kroz ISTI backend parser (stari
+   JS parser izbačen). Parser: decimalni zarezi, `;`/tab/space/`,`,
+   `ID E N [Z]` i `E N [Z]` bez ID-a (prvi token je ID samo ako je kratki
+   integer — stara "E N Z bez ID-a" zamka time RIJEŠENA), Excel s
+   headerom (geodetski: Y=easting, X=northing) ili bez, cp1250 fallback.
+   openpyxl u requirements (opcionalan; .xls odbijen s porukom).
+7. **Auto-match GCP-ova — redoslijed klikanja NEBITAN** —
+   `auto_assign_gcps()` u `georef_fit.py`: seed = najrašireniji trokut
+   klikova × sve uređene trojke točaka (vektorizirano, cap 40 točaka),
+   greedy dodjela + refit; orijentacija det<0 (foto→svijet je uvijek
+   "zrcalan" jer row raste dolje, N gore); det>0 pobjednik = E/N
+   zamijenjeni u fajlu → **auto-swap + poruka u UI**. Višak neklikanih
+   točaka u fajlu je OK; simetričan raspored → "ambiguous" upozorenje.
+   UI: checkbox "auto-match (order-free)" default ON; tablica ima ID
+   stupac i nakon Applyja pokazuje stvarno sparivanje. Ručni unos E/N
+   po kliku (bez fajla) = staro ponašanje. EPSG polje dobilo datalist
+   (3765, GK 31275/6, FR 2154, UTM…) + `lonlat_warning` za stupnjeve.
+8. **GeoTIFF fotke u exportu** — `save_photo_geotiff()` u writers.py
+   (JPEG-in-TIFF q92, fallback deflate, tiled 256, overviews 2-16×);
+   checkbox "GeoTIFF photo" (isti #exportchoices služi single i batch);
+   piše `<stem>_photo.tif`. Bez georeference: preskočen + `note` u
+   odgovoru koji UI pokaže kao toast/status.
+
 Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
-`python tests/test_georef_fit.py`, `python tests/test_plate.py`.
+`python tests/test_georef_fit.py` (i auto-assign + swap detekcija),
+`python tests/test_gcp_parse.py` (novo), `python tests/test_plate.py`.
 
 ## Kako verificirati izmjene na ovom stroju
 
@@ -67,9 +94,8 @@ Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
   snimke; kose fotke → veliki rezidiuali (UI upozorava >15 cm). Prava
   podrška = homografija (vektori se transformiraju točno točku-po-točku,
   ali maska GeoTIFF bi trebala warp; rasterio GeoRef je affine-only).
-- Parser točaka: linija `E N Z` BEZ ID-a (3 broja) se krivo čita kao
-  `ID=E, E=N, N=Z` — konvencija je "prvi token = ID". Korisnik vidi
-  vrijednosti u tablici pa može ispraviti.
+- Auto-match je O(m³) po broju točaka u fajlu — cap na 40 točaka
+  (ValueError s porukom); za grob-po-grob fajlove (<20 točaka) trenutno.
 - Nakon `batch_open` threshold slider je inertan (maska je binarni "prob")
   dok se ne pokrene novi inference — namjerno.
 - Re-export nakon batch_open ide u podfolder itema; **master** ostaje u

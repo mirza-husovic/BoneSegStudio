@@ -138,6 +138,10 @@ input[type=checkbox] { accent-color: var(--accent); }
 .dropzone .big { font-size: 26px; }
 .dropzone.drag { border-color: var(--accent); color: var(--text);
   background: rgba(20, 184, 166, .08); }
+.dropzone.gcp { padding: 7px; font-size: 12px; }
+.dropzone.gcp a { color: var(--accent); }
+#gcptablewrap td.gcpid { color: var(--muted); max-width: 52px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- GCP georeferencing panel ---------- */
 #gcppanel {

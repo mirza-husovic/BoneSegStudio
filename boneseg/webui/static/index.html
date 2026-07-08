@@ -64,6 +64,7 @@
         <label class="check"><input type="checkbox" value="dxf" checked> DXF</label>
         <label class="check"><input type="checkbox" value="svg"> SVG</label>
         <label class="check"><input type="checkbox" value="plate"> Plate (PDF)</label>
+        <label class="check" title="The photo itself as a georeferenced GeoTIFF — needs GCPs or a geo input"><input type="checkbox" value="geotiff"> GeoTIFF photo</label>
       </div>
       <label class="check"><input id="mastercb" type="checkbox"> Append to site master file</label>
       <label class="lbl" for="sitename">Site name <span class="hint">(printed on plates)</span></label>
@@ -126,9 +127,13 @@
       <canvas id="view"></canvas>
       <div id="gcppanel" hidden>
         <h4>🌍 Georeference (GCP)</h4>
-        <p class="hint">Click a point on the photo, then type its surveyed E/N —
-          3+ points. Or paste your point file below first: each click takes
-          the next point from the list.</p>
+        <p class="hint">Drop your point file (txt / csv / xlsx) below or paste
+          the points, then click them on the photo — <b>in any order</b>.
+          Extra points in the file are fine. Or skip the file and type each
+          click's E/N by hand.</p>
+        <div id="gcpdrop" class="dropzone gcp">📄 <b>Drop point file</b> or
+          <a href="#" id="gcpbrowse">browse…</a></div>
+        <input id="gcpfile" type="file" accept=".txt,.csv,.tsv,.dat,.asc,.xlsx,.xlsm" hidden>
         <textarea id="gcppaste" rows="3" spellcheck="false"
           placeholder="ID  E  N  [Z]   (one point per line)"></textarea>
         <div class="btnrow">
@@ -137,9 +142,20 @@
         </div>
         <div id="gcpqueue" class="hint"></div>
         <div id="gcptablewrap"></div>
+        <label class="check" title="Match clicks to the loaded points by geometry — click order and point order become irrelevant"><input id="gcpauto" type="checkbox" checked> auto-match points (order-free)</label>
         <div class="btnrow" id="gcpcrsrow">
           <label class="lbl-inline" for="gcpepsg">EPSG</label>
-          <input id="gcpepsg" type="text" value="3765" spellcheck="false">
+          <input id="gcpepsg" type="text" value="3765" spellcheck="false" list="epsglist">
+          <datalist id="epsglist">
+            <option value="3765">HTRS96/TM — Croatia</option>
+            <option value="31275">MGI GK zone 5 — ex-YU west</option>
+            <option value="31276">MGI GK zone 6 — ex-YU east</option>
+            <option value="2154">RGF93 Lambert-93 — France</option>
+            <option value="25832">ETRS89 UTM 32N</option>
+            <option value="25833">ETRS89 UTM 33N</option>
+            <option value="32633">WGS84 UTM 33N</option>
+            <option value="32634">WGS84 UTM 34N</option>
+          </datalist>
           <label class="check"><input id="gcpswap" type="checkbox"> swap E/N</label>
         </div>
         <button id="gcpapply" class="btn primary block" type="button">✓ Apply georeference</button>

@@ -53,6 +53,13 @@ with tempfile.TemporaryDirectory() as td:
     assert Path(idef.dxf.filename).is_file()
     rv = doc.objects.query("RASTERVARIABLES")[0]
     assert rv.dxf.frame == 1
+    # ACAD_IMAGE_DICT key must be a VALID symbol name (no path chars) —
+    # AutoCAD otherwise flags the IMAGEDEF "Unreferenced" and never loads
+    # the raster (regression: user's External References screenshot).
+    keys = list(doc.rootdict["ACAD_IMAGE_DICT"].keys())
+    assert keys == ["GRAVE_PHOTO"], keys
+    import re as _re
+    assert all(_re.fullmatch(r"[A-Za-z0-9_-]+", k) for k in keys)
     # axis-aligned: no rotation/shear components at all
     assert img.dxf.u_pixel.y == 0.0 and img.dxf.v_pixel.x == 0.0
     assert img.dxf.u_pixel.x > 0 and img.dxf.v_pixel.y > 0

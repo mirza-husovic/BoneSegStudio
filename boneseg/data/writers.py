@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Sequence
 
@@ -285,8 +286,15 @@ def _embed_dxf_photo(doc, msp, image_rgb: np.ndarray,
     doc.layers.add("PHOTO", color=8)  # grey
     # frame=1: image frames visible AND images selectable in AutoCAD.
     doc.set_raster_variables(frame=1, quality=1, units="m")
+    # The ACAD_IMAGE_DICT key must be a VALID symbol name. ezdxf defaults
+    # it to the filename — an absolute path full of '\' ':' '.' — which
+    # AutoCAD rejects: the IMAGEDEF shows as "Unreferenced" in the XREF
+    # palette and the raster never loads (frame only). Diagnosed from the
+    # user's External References screenshot; a clean explicit name fixes it.
+    safe_name = (re.sub(r"[^A-Za-z0-9_-]+", "_", dxf_path.stem).strip("_")
+                 or "GRAVE").upper() + "_PHOTO"
     image_def = doc.add_image_def(filename=str(target.resolve()),
-                                  size_in_pixel=(w, h))
+                                  size_in_pixel=(w, h), name=safe_name)
     img = msp.add_image(
         image_def=image_def, insert=(ix, iy, 0.0),
         size_in_units=(w * math.hypot(*u), h * math.hypot(*v)),

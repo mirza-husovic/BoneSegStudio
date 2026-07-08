@@ -251,14 +251,23 @@ def _embed_dxf_photo(doc, msp, image_rgb: np.ndarray,
     IMAGE entity then uses plain axis-aligned per-pixel vectors, which
     every CAD renders.
 
-    The JPEG is written NEXT TO the DXF and referenced by bare filename,
-    keeping the export folder self-contained. Without a georeference the
-    original photo goes to insert (0, -h) with unit u/v (QGIS-pixel
-    convention — same as the vectors).
+    The JPEG is written NEXT TO the DXF but referenced by ABSOLUTE path:
+    per the ezdxf docs AutoCAD resolves absolute paths best, and when the
+    folder moves it still falls back to searching the drawing's own
+    folder for the bare filename — so the reference survives both ways.
+    The underlay is capped to ~24 MP (a CAD backdrop does not need the
+    full 4x rectification budget, and AutoCAD gets slow/flaky with huge
+    rasters). Without a georeference the original photo goes to insert
+    (0, -h) with unit u/v (QGIS-pixel convention — same as the vectors).
     """
     target = dxf_path.parent / f"{dxf_path.stem}_photo.jpg"
     if georef is not None:
-        rect, _valid, grid = rectify_photo(image_rgb, georef)
+        from boneseg.data.georef_fit import rectify_params
+        ih, iw = image_rgb.shape[:2]
+        grid, k, out_w, out_h = rectify_params(
+            georef, iw, ih, max_pixels=min(4 * iw * ih, 24_000_000))
+        rect = cv2.warpPerspective(image_rgb, k, (out_w, out_h),
+                                   flags=cv2.INTER_LINEAR)
         h, w = rect.shape[:2]
         Image.fromarray(rect).save(target, "JPEG", quality=90)
         # North-up grid: lower-left corner, axis-aligned metre pixels.
@@ -274,7 +283,10 @@ def _embed_dxf_photo(doc, msp, image_rgb: np.ndarray,
         u, v = (1.0, 0.0), (0.0, 1.0)
 
     doc.layers.add("PHOTO", color=8)  # grey
-    image_def = doc.add_image_def(filename=target.name, size_in_pixel=(w, h))
+    # frame=1: image frames visible AND images selectable in AutoCAD.
+    doc.set_raster_variables(frame=1, quality=1, units="m")
+    image_def = doc.add_image_def(filename=str(target.resolve()),
+                                  size_in_pixel=(w, h))
     img = msp.add_image(
         image_def=image_def, insert=(ix, iy, 0.0),
         size_in_units=(w * math.hypot(*u), h * math.hypot(*v)),

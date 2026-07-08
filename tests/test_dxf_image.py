@@ -46,6 +46,13 @@ with tempfile.TemporaryDirectory() as td:
     save_dxf(rings, lines, out, GEOREF, image_rgb=PHOTO_RGB)
     doc, img = read_image_entity(out)
     assert (out.parent / "grave_photo.jpg").is_file(), "underlay JPEG missing"
+    # AutoCAD resolves ABSOLUTE image paths most reliably (ezdxf docs);
+    # raster variables must exist with visible frames.
+    idef = doc.objects.query("IMAGEDEF")[0]
+    assert Path(idef.dxf.filename).is_absolute(), idef.dxf.filename
+    assert Path(idef.dxf.filename).is_file()
+    rv = doc.objects.query("RASTERVARIABLES")[0]
+    assert rv.dxf.frame == 1
     # axis-aligned: no rotation/shear components at all
     assert img.dxf.u_pixel.y == 0.0 and img.dxf.v_pixel.x == 0.0
     assert img.dxf.u_pixel.x > 0 and img.dxf.v_pixel.y > 0

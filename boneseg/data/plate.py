@@ -1,12 +1,18 @@
 """Catalog plate PDF: one A4 page per grave, publication-style.
 
-Layout (A4 portrait): header with site name + grave label, the photo with
-the segmentation drawn on top, and a title block with a scale bar, north
-arrow and metadata. When the image is georeferenced the plate is printed
-at an EXACT standard cartographic scale (1:10, 1:20, ...): the image panel
-is sized so that panel_mm * scale = ground metres, and the scale bar is
-derived from the same number — what you measure on paper with a ruler is
-what the bone measures in the ground.
+Layout (A4 portrait): header with site name + grave label, the drawing
+panel, and a title block with a scale bar, north arrow and metadata.
+Two panel styles:
+
+* ``drawing`` (default) — classic publication look: black centerlines on
+  a white background, no photo. What grave catalogs actually print.
+* ``photo`` — the photo with the mask overlay and red centerlines.
+
+When the image is georeferenced the plate is printed at an EXACT standard
+cartographic scale (1:10, 1:20, ...): the image panel is sized so that
+panel_mm * scale = ground metres, and the scale bar is derived from the
+same number — what you measure on paper with a ruler is what the bone
+measures in the ground.
 
 Non-georeferenced images still get a plate (photo + vectors + metadata),
 just without the scale bar / north arrow, and are labelled "scale unknown".
@@ -136,10 +142,14 @@ def render_plate_figure(
     note: str = "",
     model_name: str = "",
     overlay_opacity: float = 0.35,
+    style: str = "drawing",
 ):
     """Compose one plate as a matplotlib Figure (A4). Returns None if
     matplotlib is unavailable. Caller owns the figure (savefig + close);
-    the batch catalog reuses this to append pages into one PdfPages."""
+    the batch catalog reuses this to append pages into one PdfPages.
+
+    ``style``: "drawing" (black centerlines on white, no photo) or
+    "photo" (photo + mask overlay + red centerlines)."""
     if not HAS_MPL:
         logger.warning("matplotlib not installed — plate export skipped")
         return None
@@ -182,27 +192,34 @@ def render_plate_figure(
                            panel_w / PAGE_W, panel_h / PAGE_H])
     ax_img.axis("off")
 
-    small = image_rgb
-    if max(h, w) > MAX_EMBED_DIM:
-        from PIL import Image as PILImage
-        k = MAX_EMBED_DIM / max(h, w)
-        small = np.asarray(PILImage.fromarray(image_rgb).resize(
-            (max(1, round(w * k)), max(1, round(h * k))), PILImage.BILINEAR))
-        small_mask = np.asarray(PILImage.fromarray(
-            (mask01 * 255).astype(np.uint8)).resize(
-            (small.shape[1], small.shape[0]), PILImage.NEAREST)) > 127
-    else:
-        small_mask = mask01 > 0
+    if style == "photo":
+        small = image_rgb
+        if max(h, w) > MAX_EMBED_DIM:
+            from PIL import Image as PILImage
+            k = MAX_EMBED_DIM / max(h, w)
+            small = np.asarray(PILImage.fromarray(image_rgb).resize(
+                (max(1, round(w * k)), max(1, round(h * k))), PILImage.BILINEAR))
+            small_mask = np.asarray(PILImage.fromarray(
+                (mask01 * 255).astype(np.uint8)).resize(
+                (small.shape[1], small.shape[0]), PILImage.NEAREST)) > 127
+        else:
+            small_mask = mask01 > 0
 
-    shown = render_overlay(small, small_mask.astype(np.uint8),
-                           overlay_opacity) if overlay_opacity > 0 else small
-    # extent in FULL-RES pixel coords so vectors overlay exactly.
-    ax_img.imshow(shown, extent=(0, w, h, 0), interpolation="bilinear")
+        shown = render_overlay(small, small_mask.astype(np.uint8),
+                               overlay_opacity) if overlay_opacity > 0 else small
+        # extent in FULL-RES pixel coords so vectors overlay exactly.
+        ax_img.imshow(shown, extent=(0, w, h, 0), interpolation="bilinear")
+        line_color, line_w = "#b40000", 0.7
+    else:
+        # Drawing style: publication look — black centerlines, white paper.
+        ax_img.set_facecolor("white")
+        line_color, line_w = "black", 0.9
+
     for line in polylines_px:
         if len(line) >= 2:
             xs = [p[0] for p in line]
             ys = [p[1] for p in line]
-            ax_img.plot(xs, ys, color="#b40000", linewidth=0.7,
+            ax_img.plot(xs, ys, color=line_color, linewidth=line_w,
                         solid_capstyle="round")
     ax_img.set_xlim(0, w)
     ax_img.set_ylim(h, 0)
@@ -254,11 +271,13 @@ def save_plate_pdf(
     note: str = "",
     model_name: str = "",
     overlay_opacity: float = 0.35,
+    style: str = "drawing",
 ) -> Path | None:
     """Render one catalog plate to ``out_path`` (PDF). Returns None if
     matplotlib is unavailable."""
     fig = render_plate_figure(image_rgb, mask01, polylines_px, georef,
-                              label, site, note, model_name, overlay_opacity)
+                              label, site, note, model_name, overlay_opacity,
+                              style=style)
     if fig is None:
         return None
     fig.savefig(out_path, format="pdf", dpi=200)

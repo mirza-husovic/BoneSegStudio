@@ -108,9 +108,25 @@ Ako nešto pođe po zlu: `git log --oneline` + `git checkout <tag/commit> -- .`
     upućuje na GeoTIFF/DXF export; 4 točke = bez redundancije (rezidiuali
     0) → upozorenje da se doda 5.
 
+12. **Auto-match tie-break za SIMETRIČNE rasporede (user: "sve isto,
+    razvučeno")** — stvarni slučaj: 4 GCP-a čine pravokutnik ~0.98×0.44 m.
+    Affine preslikava pravokutnik na SVAKU cikliranu verziju samog sebe
+    EGZAKTNO → sve 4 rotacije sparivanja fitaju unutar šuma klika, čisti
+    min-RMS je deterministički birao KRIVU → fotka zgnječena za aspect²
+    (~4.8×) = "razvučeni" izgled u QGIS/CAD-u pri RMS 0.9 cm i affine
+    modu (rezidiuali NE detektiraju krivo sparivanje simetričnog
+    rasporeda!). Fix u `auto_assign_gcps`: statistički izjednačeni
+    kandidati (ista orijentacija, RMS ≤ max(2×best, best+2cm)) rangiraju
+    se po (1) najmanjoj distorziji (omjer singularnih vrijednosti — kriva
+    rotacija MORA gnječiti), (2) RMS u 5 mm koracima, (3) redoslijedu
+    klikanja (identitet za savršenu simetriju). Regresija s TOČNIM GR30
+    koordinatama (klik po redu / izmiješano / s 5. točkom); 5 kliknutih
+    točaka razbija simetriju i gasi "ambiguous". UI poruka objašnjava
+    tie-break + savjetuje 5. točku.
+
 Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
 `python tests/test_georef_fit.py` (auto-assign + swap + homografija +
-rectify grid), `python tests/test_gcp_parse.py`,
+rectify grid + GR30 simetrija), `python tests/test_gcp_parse.py`,
 `python tests/test_dxf_image.py` (rektificirani underlay),
 `python tests/test_plate.py`.
 

@@ -1624,13 +1624,20 @@ $("#gcpapply").addEventListener("click", async () => {
     const worst = Math.max(...res.residuals_m);
     st.className = (worst > 0.15 || res.ambiguous) ? "hint bad" : "hint ok";
     st.innerHTML =
-      `Applied — RMS <b>${(res.rms_m * 100).toFixed(1)} cm</b>, per point: ` +
+      `Applied (<b>${res.mode === "homography" ? "perspective" : "affine"}</b>) — ` +
+      `RMS <b>${(res.rms_m * 100).toFixed(1)} cm</b>, per point: ` +
       res.residuals_m.map((r, i) => `#${i + 1} ${(r * 100).toFixed(1)}`).join(", ") + " cm." +
       (res.matched ? "<br>Points auto-matched — table shows the pairing." : "") +
       (res.auto_swapped ? "<br>⚠ E/N were SWAPPED in your points — corrected automatically (geodetic Y/X)." : "") +
       (res.ambiguous ? "<br>⚠ The point layout is symmetric — a different pairing fits almost as well. Verify in QGIS." : "") +
-      (worst > 0.15 ? "<br>⚠ Large residuals — oblique photo, or a mistyped digit?"
-                    : "") +
+      (res.mode === "homography"
+        ? "<br>Oblique photo detected — perspective corrected. Vectors are exact; " +
+          "for the photo in GIS/CAD use the <b>GeoTIFF photo</b> / DXF export (rectified, no stretching). " +
+          (gcps.length === 4 ? "⚠ 4 points = no redundancy, residuals read 0 — a 5th point gives a real check. " : "")
+        : "") +
+      (res.mode !== "homography" && worst > 0.15
+        ? "<br>⚠ Large residuals — oblique photo (add a 4th/5th point for perspective correction), or a mistyped digit?"
+        : "") +
       (res.world_files.length
         ? `<br>World file written (${res.world_files.join(", ")}) — the photo now opens georeferenced in QGIS.`
         : "");

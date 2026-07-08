@@ -887,17 +887,32 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             sidecar.write_text(json.dumps(
                 {"version": 1, "epsg": epsg, "gcps": gcps}, indent=1),
                 encoding="utf-8")
+            perspective = georef2.homography is not None
             world: list[str] = []
-            try:
-                world = [p.name for p in write_world_file(state.source_path, georef2)]
-            except Exception:
-                logger.exception("World file write failed (georef still applied)")
-            logger.info("Georef applied: %d GCPs, rms %.3f m, epsg=%s",
-                        len(gcps), rms, epsg)
+            if perspective:
+                # Drop any world file from an earlier affine apply — it
+                # would keep opening the original sheared in QGIS.
+                from boneseg.data.georef_fit import WORLD_EXT
+                ext = WORLD_EXT.get(state.source_path.suffix.lower(), ".wld")
+                for stale in (state.source_path.with_suffix(ext),
+                              state.source_path.with_suffix(".prj")):
+                    stale.unlink(missing_ok=True)
+            else:
+                # A world file can only carry an affine; for an oblique
+                # photo that is exactly the sheared look we avoid — the
+                # rectified GeoTIFF export is the GIS deliverable instead.
+                try:
+                    world = [p.name for p in write_world_file(state.source_path, georef2)]
+                except Exception:
+                    logger.exception("World file write failed (georef still applied)")
+            logger.info("Georef applied: %d GCPs, rms %.3f m, epsg=%s, mode=%s",
+                        len(gcps), rms, epsg,
+                        "homography" if perspective else "affine")
             return {**state.result_summary(),
                     "residuals_m": [round(r, 3) for r in residuals],
                     "rms_m": round(rms, 3),
                     "world_files": world,
+                    "mode": "homography" if perspective else "affine",
                     **extras}
         finally:
             state.lock.release()
@@ -927,6 +942,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             state.set_image(src)
             if mask_path is not None:
                 mask01 = (np.asarray(Image.open(mask_path).convert("L")) > 127).astype(np.uint8)
+                if (mask01.shape != state.image.shape[:2]
+                        and state.georef is not None
+                        and state.georef.homography is not None):
+                    # Oblique-photo batch export writes the mask RECTIFIED
+                    # (north-up grid); warp it back into pixel space to
+                    # seed the editor.
+                    from boneseg.data.georef_fit import rectify_params
+                    ih, iw = state.image.shape[:2]
+                    _grid, k, out_w, out_h = rectify_params(state.georef, iw, ih)
+                    if mask01.shape == (out_h, out_w):
+                        mask01 = cv2.warpPerspective(
+                            mask01, k, (iw, ih),
+                            flags=cv2.WARP_INVERSE_MAP | cv2.INTER_NEAREST)
                 if mask01.shape != state.image.shape[:2]:
                     raise HTTPException(400,
                         f"Exported mask {mask_path.name} does not match the image size "

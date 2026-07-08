@@ -105,10 +105,22 @@ def polylines_px_to_output(
 ) -> list[Polyline]:
     """Map pixel polylines into GeoJSON output coordinates.
 
-    Georeferenced: through the affine transform into the input CRS.
+    Georeferenced: through the affine transform into the input CRS — or
+    through the exact perspective homography when the GCP fit detected an
+    oblique photo (GeoRef.homography), point by point.
     Plain image: Y negated, matching QGIS's placement of an ungeoreferenced
     raster at world Y = 0..-H (same convention as predict.py).
     """
+    if georef is not None and georef.homography is not None:
+        from boneseg.data.georef_fit import apply_homography
+        out = []
+        for line in polylines_px:
+            if not line:
+                out.append([])
+                continue
+            pts = apply_homography(georef.homography, line)
+            out.append([(float(x), float(y)) for x, y in pts])
+        return out
     if georef is not None and HAS_RASTERIO:
         out: list[Polyline] = []
         for line in polylines_px:
@@ -130,7 +142,16 @@ def mask_to_rings(mask01: np.ndarray, georef: GeoRef | None) -> list[Polyline]:
     OpenCV contours in QGIS-pixel coordinates — exactly as predict.py did.
     """
     rings: list[Polyline] = []
-    if HAS_RASTERIO and georef is not None:
+    if HAS_RASTERIO and georef is not None and georef.homography is not None:
+        # Perspective: polygonize in PIXEL space (identity transform), then
+        # push every vertex through the exact homography.
+        from boneseg.data.georef_fit import apply_homography
+        ident = rasterio.transform.Affine.identity()
+        for geom, val in rio_shapes(mask01, mask=(mask01 > 0), transform=ident):
+            if val == 1:
+                pts = apply_homography(georef.homography, geom["coordinates"][0])
+                rings.append([(float(x), float(y)) for x, y in pts])
+    elif HAS_RASTERIO and georef is not None:
         for geom, val in rio_shapes(mask01, mask=(mask01 > 0), transform=georef.transform):
             if val == 1:
                 rings.append([(float(x), float(y)) for x, y in geom["coordinates"][0]])

@@ -70,11 +70,128 @@ def fit_affine_gcps(
     return transform, residuals, rms
 
 
+# An affine that already fits this well means the photo is effectively
+# nadir — perspective correction would add nothing but would cost the
+# world-file workflow, so we stay affine below this RMS.
+NADIR_RMS_M = 0.05
+
+
+def fit_homography_gcps(
+    gcps: list[dict],
+) -> tuple[np.ndarray, list[float], float]:
+    """Least-squares homography (3x3, pixel -> world) from >=4 GCPs.
+
+    A homography models the perspective of an OBLIQUE photo of a flat
+    plane exactly — what the affine cannot. Solved as a normalized DLT
+    (Hartley normalization matters here: world coordinates are ~5e6 m, a
+    raw DLT would be numerically useless). Exact for 4 points;
+    overdetermined beyond. Returns (H, per-point residuals in m, RMS).
+    """
+    if len(gcps) < 4:
+        raise ValueError("At least 4 control points are required for perspective")
+
+    src = np.array([[float(g["px"]), float(g["py"])] for g in gcps])
+    dst = np.array([[float(g["e"]), float(g["n"])] for g in gcps])
+
+    def _norm(pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        c = pts.mean(axis=0)
+        d = np.sqrt(((pts - c) ** 2).sum(axis=1)).mean() or 1.0
+        s = math.sqrt(2.0) / d
+        t = np.array([[s, 0, -s * c[0]], [0, s, -s * c[1]], [0, 0, 1.0]])
+        homog = np.column_stack([pts, np.ones(len(pts))])
+        return (t @ homog.T).T[:, :2], t
+
+    sn, t_src = _norm(src)
+    dn, t_dst = _norm(dst)
+
+    a = []
+    for (x, y), (u, v) in zip(sn, dn):
+        a.append([-x, -y, -1, 0, 0, 0, u * x, u * y, u])
+        a.append([0, 0, 0, -x, -y, -1, v * x, v * y, v])
+    _u, _s, vt = np.linalg.svd(np.asarray(a))
+    h_norm = vt[-1].reshape(3, 3)
+    h = np.linalg.inv(t_dst) @ h_norm @ t_src
+    h = h / h[2, 2]
+
+    proj = apply_homography(h, src)
+    residuals = [float(math.hypot(px - ex, py - ey))
+                 for (px, py), (ex, ey) in zip(proj, dst)]
+    rms = float(math.sqrt(sum(r * r for r in residuals) / len(residuals)))
+    return h, residuals, rms
+
+
+def apply_homography(h: np.ndarray, pts) -> np.ndarray:
+    """Project Nx2 points through a 3x3 homography."""
+    p = np.column_stack([np.asarray(pts, dtype=np.float64), np.ones(len(pts))])
+    q = (h @ p.T).T
+    return q[:, :2] / q[:, 2:3]
+
+
 def georef_from_gcps(gcps: list[dict], epsg: int | None) -> tuple[GeoRef, list[float], float]:
-    """Fit + wrap in the pipeline's GeoRef (CRS optional = local grid)."""
+    """Fit + wrap in the pipeline's GeoRef (CRS optional = local grid).
+
+    3 points -> affine. 4+ points -> affine first; if it fits to nadir
+    accuracy (RMS <= NADIR_RMS_M) it stays — otherwise the photo is
+    oblique and a homography is fitted on top (GeoRef.homography set),
+    with the affine kept as the approximate transform for consumers that
+    cannot handle perspective. Returned residuals belong to whichever
+    model is ACTIVE.
+    """
     transform, residuals, rms = fit_affine_gcps(gcps)
     crs = rasterio.crs.CRS.from_epsg(int(epsg)) if epsg else None
+    if len(gcps) >= 4 and rms > NADIR_RMS_M:
+        h, residuals_h, rms_h = fit_homography_gcps(gcps)
+        logger.info("Oblique photo detected (affine rms %.3f m) — "
+                    "homography rms %.3f m", rms, rms_h)
+        return GeoRef(transform, crs, homography=h), residuals_h, rms_h
     return GeoRef(transform, crs), residuals, rms
+
+
+def rectify_params(
+    georef: GeoRef, width: int, height: int, max_pixels: int | None = None,
+) -> tuple["Affine", np.ndarray, int, int]:
+    """North-up target grid for warping (rectifying) the photo/mask.
+
+    Returns ``(grid_transform, K, out_w, out_h)``: an axis-aligned
+    world grid covering the image footprint at the image-centre ground
+    sample distance, and the 3x3 ``K`` mapping ORIGINAL pixel -> GRID
+    pixel for cv2.warpPerspective. Works for both perspective and
+    plain-affine georefs (the DXF underlay rectifies affine shear too —
+    AutoCAD cannot display sheared rasters at all).
+    """
+    if georef.homography is not None:
+        h = np.asarray(georef.homography, dtype=np.float64)
+    else:
+        t = georef.transform
+        h = np.array([[t.a, t.b, t.c], [t.d, t.e, t.f], [0, 0, 1.0]])
+
+    w, hh = float(width), float(height)
+    corners = apply_homography(h, [(0, 0), (w, 0), (w, hh), (0, hh)])
+    minx, miny = corners.min(axis=0)
+    maxx, maxy = corners.max(axis=0)
+
+    # Ground sample distance at the image centre (metres per pixel).
+    cx, cy = w / 2.0, hh / 2.0
+    steps = apply_homography(h, [(cx, cy), (cx + 1, cy), (cx, cy + 1)])
+    gsd = float((np.linalg.norm(steps[1] - steps[0])
+                 + np.linalg.norm(steps[2] - steps[0])) / 2.0) or 1.0
+
+    # Cap the output size — extreme obliques blow the footprint up.
+    max_pixels = max_pixels or int(4 * width * height)
+    out_w = max(1, math.ceil((maxx - minx) / gsd))
+    out_h = max(1, math.ceil((maxy - miny) / gsd))
+    if out_w * out_h > max_pixels:
+        f = math.sqrt(out_w * out_h / max_pixels)
+        gsd *= f
+        out_w = max(1, math.ceil((maxx - minx) / gsd))
+        out_h = max(1, math.ceil((maxy - miny) / gsd))
+        logger.warning("Rectified grid capped: gsd coarsened %.2fx", f)
+
+    grid = Affine.translation(minx, maxy) * Affine.scale(gsd, -gsd)
+    g3 = np.array([[grid.a, grid.b, grid.c], [grid.d, grid.e, grid.f],
+                   [0, 0, 1.0]])
+    k = np.linalg.inv(g3) @ h
+    return grid, k, out_w, out_h
 
 
 MAX_AUTO_POINTS = 40  # seed search is O(m^3); 40 -> ~60k seeds, still <1 s

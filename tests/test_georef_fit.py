@@ -117,4 +117,51 @@ except ValueError:
     pass
 print("auto-assign guard rails OK")
 
+# --- homography: oblique photo (perspective) ------------------------------ #
+from boneseg.data.georef_fit import (apply_homography, fit_homography_gcps,
+                                     georef_from_gcps as gfg, rectify_params)
+
+# Ground-truth homography with a real perspective term (oblique camera).
+H_TRUE = np.array([
+    [0.0015, -0.0006, 457120.0],
+    [0.0004,  0.0011, 4795320.0],
+    [1.2e-5,  3.0e-5, 1.0],
+])
+px6 = [(100, 100), (1800, 150), (1700, 1200), (200, 1100), (950, 600), (500, 300)]
+w6 = apply_homography(H_TRUE, px6)
+gcps_h = [{"px": x, "py": y, "e": e, "n": n}
+          for (x, y), (e, n) in zip(px6, w6)]
+
+h_fit, res_h, rms_h = fit_homography_gcps(gcps_h)
+assert rms_h < 1e-4, rms_h
+proj = apply_homography(h_fit, [(400, 700)])
+truth = apply_homography(H_TRUE, [(400, 700)])
+assert np.allclose(proj, truth, atol=1e-4)
+print(f"homography exact fit OK (rms={rms_h:.2e} m)")
+
+# georef_from_gcps: oblique -> homography attached, affine kept as approx
+g_obl, res_obl, rms_obl = gfg(gcps_h, 3765)
+assert g_obl.homography is not None, "oblique photo should get a homography"
+assert rms_obl < 1e-4 and "perspective" in str(g_obl)
+# nadir (pure affine) points -> NO homography even with 4+ points
+g_nad, _res_n, rms_n = gfg(gcps, 3765)   # gcps = exact affine points above
+assert g_nad.homography is None and rms_n < 1e-4
+print("mode selection OK (oblique->homography, nadir->affine)")
+
+# rectified grid: north-up, K maps photo corners inside the grid
+grid, K, ow, oh = rectify_params(g_obl, 1920, 1280)
+assert grid.b == 0 and grid.d == 0 and grid.a > 0 and grid.e < 0
+gc = apply_homography(K, [(0, 0), (1920, 0), (1920, 1280), (0, 1280)])
+assert gc[:, 0].min() > -1.5 and gc[:, 0].max() < ow + 1.5
+assert gc[:, 1].min() > -1.5 and gc[:, 1].max() < oh + 1.5
+print(f"rectify grid OK ({ow}x{oh}, gsd={grid.a*1000:.1f} mm)")
+
+# vectors go through the homography EXACTLY
+from boneseg.postprocessing import polylines_px_to_output
+line_px = [(150.0, 200.0), (900.0, 640.0), (1500.0, 1000.0)]
+out_line = polylines_px_to_output([line_px], g_obl)[0]
+expect = apply_homography(H_TRUE, line_px)
+assert np.allclose(np.array(out_line), expect, atol=1e-3)
+print("polylines through homography OK")
+
 print("GEOREF FIT TEST PASSED")

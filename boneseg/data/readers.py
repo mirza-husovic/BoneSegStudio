@@ -36,13 +36,23 @@ class GeoRef:
 
     ``transform`` is a rasterio affine transform; ``crs`` a rasterio CRS.
     Typed as Any so the rest of the codebase does not import rasterio.
+
+    ``homography`` (optional 3x3 ndarray, pixel->world) is set when the
+    GCP fit detected perspective (an oblique, non-nadir photo): vectors
+    are then mapped through it EXACTLY, and raster outputs are warped
+    (rectified) onto a north-up grid instead of being sheared by the
+    affine. ``transform`` stays the best-affine approximation of the same
+    mapping — consumers that cannot handle perspective (plate scale bar)
+    keep working, just approximately.
     """
 
     transform: Any
     crs: Any
+    homography: Any = None
 
     def __str__(self) -> str:
-        return f"CRS={self.crs}" if self.crs else "affine only"
+        base = f"CRS={self.crs}" if self.crs else "affine only"
+        return f"{base} + perspective" if self.homography is not None else base
 
 
 class UnsupportedImageError(ValueError):

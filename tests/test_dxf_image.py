@@ -32,39 +32,47 @@ def read_image_entity(dxf_path: Path):
     return doc, imgs[0]
 
 
+import numpy as np
+
+PHOTO_RGB = np.full((H, W, 3), (120, 100, 80), dtype=np.uint8)
+
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
-    photo_dir = td / "src"
-    photo_dir.mkdir()
-    photo = photo_dir / "DSCF_test.jpg"
-    Image.new("RGB", (W, H), (120, 100, 80)).save(photo)
 
-    # --- georeferenced: insert = T*(0,h), u = (a,d), v = (-b,-e) ---------- #
+    # --- georeferenced: underlay is RECTIFIED (north-up, axis-aligned u/v;
+    # AutoCAD cannot display sheared/rotated rasters at all) --------------- #
     out = td / "geo" / "grave.dxf"
     out.parent.mkdir()
-    save_dxf(rings, lines, out, GEOREF, image_path=photo, image_size=(W, H))
+    save_dxf(rings, lines, out, GEOREF, image_rgb=PHOTO_RGB)
     doc, img = read_image_entity(out)
-    ix, iy = T * (0.0, float(H))
-    assert abs(img.dxf.insert.x - ix) < 1e-9 and abs(img.dxf.insert.y - iy) < 1e-9
-    assert abs(img.dxf.u_pixel.x - T.a) < 1e-12 and abs(img.dxf.u_pixel.y - T.d) < 1e-12
-    assert abs(img.dxf.v_pixel.x + T.b) < 1e-12 and abs(img.dxf.v_pixel.y + T.e) < 1e-12
-    assert (out.parent / photo.name).is_file(), "photo not copied next to the DXF"
-    # top-right pixel corner must land where the affine puts it:
-    tr_world = T * (W, 0.0)
-    tr_dxf = (img.dxf.insert.x + W * img.dxf.u_pixel.x + H * img.dxf.v_pixel.x,
-              img.dxf.insert.y + W * img.dxf.u_pixel.y + H * img.dxf.v_pixel.y)
-    assert abs(tr_dxf[0] - tr_world[0]) < 1e-6 and abs(tr_dxf[1] - tr_world[1]) < 1e-6
+    assert (out.parent / "grave_photo.jpg").is_file(), "underlay JPEG missing"
+    # axis-aligned: no rotation/shear components at all
+    assert img.dxf.u_pixel.y == 0.0 and img.dxf.v_pixel.x == 0.0
+    assert img.dxf.u_pixel.x > 0 and img.dxf.v_pixel.y > 0
+    # the underlay must cover the world footprint of the warped photo corners
+    from boneseg.data.georef_fit import apply_homography, rectify_params
+    grid, k, out_w, out_h = rectify_params(GEOREF, W, H)
+    assert abs(img.dxf.u_pixel.x - grid.a) < 1e-9
+    corners = [T * (0, 0), T * (W, 0), T * (W, H), T * (0, H)]
+    minx = min(c[0] for c in corners); miny = min(c[1] for c in corners)
+    maxx = max(c[0] for c in corners); maxy = max(c[1] for c in corners)
+    x0, y0 = img.dxf.insert.x, img.dxf.insert.y
+    x1 = x0 + out_w * img.dxf.u_pixel.x
+    y1 = y0 + out_h * img.dxf.v_pixel.y
+    gsd = grid.a
+    assert abs(x0 - minx) < 2 * gsd and abs(y0 - miny) < 2 * gsd, (x0, minx, y0, miny)
+    assert abs(x1 - maxx) < 2 * gsd and abs(y1 - maxy) < 2 * gsd
     # vectors still present, image entity written FIRST (stays underneath)
     ents = list(doc.modelspace())
     assert ents[0].dxftype() == "IMAGE"
     assert sum(1 for e in ents if e.dxftype() == "LWPOLYLINE") == 2
-    print("georeferenced IMAGE underlay OK (corners match affine)")
+    print("georeferenced IMAGE underlay OK (rectified, axis-aligned, covers footprint)")
 
     # --- pixel mode: insert (0,-h), unit u/v — QGIS-pixel convention ------ #
     out2 = td / "px" / "grave.dxf"
     out2.parent.mkdir()
     px_rings = [[(10.0, -10.0), (100.0, -10.0), (100.0, -80.0)]]
-    save_dxf(px_rings, [], out2, None, image_path=photo, image_size=(W, H))
+    save_dxf(px_rings, [], out2, None, image_rgb=PHOTO_RGB)
     _doc2, img2 = read_image_entity(out2)
     assert img2.dxf.insert.x == 0.0 and img2.dxf.insert.y == -float(H)
     assert img2.dxf.u_pixel.x == 1.0 and img2.dxf.v_pixel.y == 1.0

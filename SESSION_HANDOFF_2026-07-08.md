@@ -87,10 +87,32 @@ Ako nešto pođe po zlu: `git log --oneline` + `git checkout <tag/commit> -- .`
     smoke [7/7] varira 24↔25 zbog poznate nedeterminističke
     skeletonizacije, nije bug.
 
+11. **HOMOGRAFIJA za kose fotke (user: "razvučeno u QGIS/CAD-u")** —
+    affine je kosu fotku shearao u paralelogram, a shearani u/v vektori
+    su i razlog zašto obični AutoCAD NIJE prikazivao DXF underlay (CAD
+    ne renderira iskošene rastere). Rješenje: `fit_homography_gcps`
+    (normalizirani DLT — svjetske koordinate ~5e6 m TRAŽE Hartley
+    normalizaciju!), `apply_homography`, `rectify_params` (north-up grid
+    na GSD centra slike, cap 4× piksela izvora). **Policy u
+    `georef_from_gcps`**: 3 točke → affine; 4+ → affine ako mu je RMS ≤
+    5 cm (nadir), inače homografija u `GeoRef.homography` (affine ostaje
+    kao aproksimacija za potrošače koji ne znaju perspektivu — plate
+    mjerka). Vektori idu kroz homografiju EGZAKTNO
+    (vectorize.py); `save_photo_geotiff`/`save_mask_raster` warpaju
+    (rektificiraju) na north-up grid + internal validity mask za rubove;
+    **DXF underlay se UVIJEK rektificira kad je georeferenciran** (osno
+    poravnati u/v → svaki CAD prikazuje); world file se u perspective
+    modu PRESKAČE (nosi samo affine = razvučeni izgled) + stari
+    .jgw/.prj se BRIŠU; `batch_open` unwarpa rektificiranu batch masku
+    natrag u pixel space. UI status javlja mod (affine/perspective) i
+    upućuje na GeoTIFF/DXF export; 4 točke = bez redundancije (rezidiuali
+    0) → upozorenje da se doda 5.
+
 Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
-`python tests/test_georef_fit.py` (i auto-assign + swap detekcija),
-`python tests/test_gcp_parse.py` (novo), `python tests/test_dxf_image.py`
-(novo), `python tests/test_plate.py`.
+`python tests/test_georef_fit.py` (auto-assign + swap + homografija +
+rectify grid), `python tests/test_gcp_parse.py`,
+`python tests/test_dxf_image.py` (rektificirani underlay),
+`python tests/test_plate.py`.
 
 ## Kako verificirati izmjene na ovom stroju
 
@@ -107,10 +129,11 @@ Testovi: `python tests/smoke_test.py` (E2E, mora proći!),
 
 ## Poznata ograničenja / sitnice (namjerno ostavljeno)
 
-- **Affine ≠ kosa fotka**: georeferenciranje je egzaktno za orto/nadir
-  snimke; kose fotke → veliki rezidiuali (UI upozorava >15 cm). Prava
-  podrška = homografija (vektori se transformiraju točno točku-po-točku,
-  ali maska GeoTIFF bi trebala warp; rasterio GeoRef je affine-only).
+- ~~Affine ≠ kosa fotka~~ RIJEŠENO (homografija, vidi #11). Ostatak:
+  homografija pretpostavlja RAVNU plohu groba — točke na različitim
+  dubinama (Z raspon velik) i dalje daju rezidiuale; plate mjerka u
+  perspective modu koristi affine aproksimaciju (mjerilo kose fotke
+  ionako nije uniformno na papiru).
 - Auto-match je O(m³) po broju točaka u fajlu — cap na 40 točaka
   (ValueError s porukom); za grob-po-grob fajlove (<20 točaka) trenutno.
 - Nakon `batch_open` threshold slider je inertan (maska je binarni "prob")

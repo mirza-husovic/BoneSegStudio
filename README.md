@@ -1,6 +1,6 @@
 # 🦴 BoneSeg Studio
 
-A professional, fully-offline desktop application for **archaeological bone
+A fully-offline desktop application for **archaeological bone
 segmentation, skeletonization and vectorization**. It wraps the trained
 `model367b3` UNet (EfficientNet-B3) in a fast local web interface
 (FastAPI backend + hand-written Canvas 2D frontend — no Gradio, no WebGL,
@@ -22,10 +22,12 @@ Unretouched output at default settings.*
 
 ![BoneSeg Studio interface — original photo, skeleton, and clean vector views](docs/app_demo.gif)
 
-*The actual interface (not a mock-up): load a grave photo, run one-click
-inference, then flip between the original photo, the red skeleton over the
-photo, and the clean CAD-ready line drawing. Real output on a held-out grave
-at default settings — captured live from the running app.*
+*The interface: load a grave photo, run one-click inference, then flip between
+the original photo, the red skeleton over the photo, and the clean CAD-ready
+line drawing.*
+
+**No manual editing** — every line above is raw `model367b3` output on a
+held-out grave at default settings, captured live from the running app.
 
 <p align="center">
   <img src="docs/app_ui_skeleton.png" width="88%"

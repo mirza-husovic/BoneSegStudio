@@ -10,6 +10,9 @@ logs/
 outputs/
 
 # Models (large binaries live outside the repo)
+# Local weights live under models/ (a real folder or a junction to them);
+# never publish them.
+/models/
 *.pth
 *.pt
 

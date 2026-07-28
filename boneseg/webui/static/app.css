@@ -144,14 +144,14 @@ input[type=checkbox] { accent-color: var(--accent); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- GCP georeferencing panel ---------- */
-#gcppanel {
+#gcppanel, #sampanel {
   position: absolute; top: 10px; right: 10px; width: 300px; max-height: 92%;
   overflow-y: auto; z-index: 10; padding: 12px;
   background: rgba(23, 30, 38, .96); border: 1px solid var(--border);
   border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px;
   box-shadow: 0 6px 24px rgba(0,0,0,.5);
 }
-#gcppanel h4 { margin: 0; font-size: 13.5px; }
+#gcppanel h4, #sampanel h4 { margin: 0; font-size: 13.5px; }
 #gcppanel textarea {
   width: 100%; resize: vertical; padding: 6px 8px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--panel2);
@@ -168,6 +168,8 @@ input[type=checkbox] { accent-color: var(--accent); }
 #gcpcrsrow #gcpepsg { width: 70px; flex: 0 0 auto; }
 #gcpstatus.ok { color: var(--accent); }
 #gcpstatus.bad { color: var(--danger); }
+#gcpcrsguess.ok { color: var(--accent); }
+#gcpcrsguess.bad { color: var(--danger); }
 
 /* ---------- status bar ---------- */
 #statusbar {

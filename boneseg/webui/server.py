@@ -42,6 +42,8 @@ from boneseg.config import (
     MAX_EDIT_DIM,
     OUTPUTS_DIR,
     PROJECT_ROOT,
+    SAM2_CHECKPOINT_PATH,
+    SAM2_CONFIG_NAME,
     SUPPORTED_EXTENSIONS,
     TRAINING_STAGING_DIR,
     AppConfig,
@@ -51,6 +53,7 @@ from boneseg.config import (
     PostprocessSettings,
 )
 from boneseg.data import GeoRef, read_image
+from boneseg.inference.sam import SamEngine
 from boneseg.data.georef_fit import (
     gcps_sidecar_path,
     georef_from_gcps,
@@ -59,7 +62,7 @@ from boneseg.data.georef_fit import (
 from boneseg.logging_setup import get_logger
 from boneseg.models import MODEL_REGISTRY
 from boneseg.pipeline import BonePipeline, PipelineResult
-from boneseg.postprocessing import mask_to_rings, polylines_px_to_output
+from boneseg.postprocessing import count_components, mask_to_rings, polylines_px_to_output
 
 logger = get_logger(__name__)
 
@@ -94,8 +97,16 @@ class Studio:
         self.edit_scale: float = 1.0
         self.edit_size: tuple[int, int] = (0, 0)        # (w, h)
         self.photo_jpeg: bytes | None = None            # edit-res photo
+        self.edit_image: np.ndarray | None = None       # edit-res RGB, for SAM
         self.mask_basis: np.ndarray | None = None       # bool, edit-res, as served
         self.mask_version: int = 0
+
+        # SAM2 promptable segmentation (walls / stones / anything the bone
+        # model wasn't trained for) — one shared engine, lazy-loaded on
+        # first prompt; sam_ready tracks whether IT has encoded the CURRENT
+        # photo yet (encoding is the expensive ~1s step, done once per photo).
+        self.sam_engine = SamEngine(SAM2_CHECKPOINT_PATH, SAM2_CONFIG_NAME)
+        self.sam_ready: bool = False
 
         # Cumulative direct centerline edits, FULL resolution (bool).
         # Re-applied on every rebuild so pen strokes / skeleton erasures
@@ -153,6 +164,8 @@ class Studio:
         buf = io.BytesIO()
         Image.fromarray(small).save(buf, "JPEG", quality=88)
         self.photo_jpeg = buf.getvalue()
+        self.edit_image = small
+        self.sam_ready = False
         logger.info("Image loaded: %s (%dx%d, edit %dx%d, georef=%s)",
                     path.name, w, h, ew, eh, georef is not None)
 
@@ -452,8 +465,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         geometry outright — no skeletonization, no spline re-fitting — so what
         the user draws is exactly what exports. Coordinates are mapped back to
         full-resolution pixels via ``edit_scale``; the skeleton raster is
-        redrawn to match. These overrides live until the next inference /
-        postprocess / mask-apply rebuilds from the mask.
+        redrawn to match.
+
+        The raster mask is ALSO rebuilt from these polylines (same canonical
+        stroke profile as ``/api/save_training`` — 1 px centerlines dilated
+        with a 5x5 ellipse), so the Mask tab, mask/DXF/plate exports and the
+        component/pixel stats all reflect hand-drawn lines instead of the
+        stale model/brush mask. These overrides live until the next inference
+        / postprocess / mask-apply rebuilds from scratch.
         """
         _acquire()
         try:
@@ -469,9 +488,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             r.polylines_px = polylines_px
             r.polylines_out = polylines_px_to_output(polylines_px, r.georef)
             r.skeleton = _rasterize_polylines(polylines_px, r.mask.shape)
+            r.mask = cv2.dilate(
+                r.skeleton, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+            r.rings_out = mask_to_rings(r.mask, r.georef)
+            r.n_components = count_components(r.mask)
+            r.fg_pixels = int(r.mask.sum())
             r.stats["edited"] = "vector"
             state.mask_version += 1
             state.mask_basis = None
+            state.mask_added = None
             logger.info("Vectors replaced by hand: %d centerlines", len(polylines_px))
             return state.result_summary()
         finally:
@@ -656,6 +681,66 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         finally:
             state.lock.release()
 
+    @app.post("/api/blank_canvas")
+    async def blank_canvas():
+        """Start editing with an empty mask — for photos that never go
+        through the bone model at all (walls, features): a zero probability
+        map through the normal postprocess path gives a valid, empty
+        PipelineResult instantly (no inference), so the SAM/brush/pen tools
+        have something to build into."""
+        if state.image is None:
+            raise HTTPException(400, "Load an image first.")
+        _acquire()
+        try:
+            h, w = state.image.shape[:2]
+            prob = np.zeros((h, w), dtype=np.float32)
+            pp = PostprocessSettings(threshold=0.5, min_component_px=0)
+            state.result = state.pipeline.postprocess(
+                state.source_path, state.image, state.georef, prob, pp)
+            state.pp_applied = pp
+            state.mask_version += 1
+            state.mask_basis = None
+            state.mask_added = None
+            state.cl_add = None
+            state.cl_remove = None
+            return state.result_summary()
+        finally:
+            state.lock.release()
+
+    @app.post("/api/sam/predict")
+    async def sam_predict(payload: dict = Body(...)):
+        """Point/box-prompted mask proposal from SAM2, at edit resolution
+        (same coordinate space as clicks and /api/image/mask.png). This is
+        a PREVIEW only — the client draws the returned mask into its own
+        edit canvas like a brush stroke and applies it through the normal
+        /api/apply_mask, so undo/redo, exports etc. all work unchanged."""
+        if state.image is None or state.edit_image is None:
+            raise HTTPException(400, "Load an image first.")
+        pts = payload.get("points") or []
+        box = payload.get("box")
+        if not pts and not box:
+            raise HTTPException(400, "Provide at least one point or a box.")
+        _acquire()
+        try:
+            try:
+                if not state.sam_ready:
+                    state.sam_engine.set_image(state.edit_image)
+                    state.sam_ready = True
+                point_coords = np.array([[p["x"], p["y"]] for p in pts],
+                                        dtype=np.float32) if pts else None
+                point_labels = np.array([1 if p.get("positive", True) else 0 for p in pts],
+                                        dtype=np.int64) if pts else None
+                box_arr = np.array([box["x0"], box["y0"], box["x1"], box["y1"]],
+                                   dtype=np.float32) if box else None
+                mask, score = state.sam_engine.predict(point_coords, point_labels, box_arr)
+            except RuntimeError as exc:
+                raise HTTPException(500, str(exc))
+            data = _png_rgba(mask, rgb=(255, 165, 0))
+            return Response(data, media_type="image/png",
+                            headers={**NO_CACHE, "X-Sam-Score": f"{score:.4f}"})
+        finally:
+            state.lock.release()
+
     # ------------------------------------------------------------------ #
     # Export                                                              #
     # ------------------------------------------------------------------ #
@@ -770,6 +855,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                          text: str | None = Form(None)):
         """Parse a point file (total-station TXT, CSV, Excel) or pasted
         text into GCP points. Pure parsing — no state is touched."""
+        from boneseg.data.crs_guess import guess_crs
         from boneseg.data.gcp_parse import (
             looks_like_lonlat,
             parse_gcp_file,
@@ -792,7 +878,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(400, "No points recognized — expected "
                                      "“ID E N [Z]” per line/row.")
         return {"points": pts, "n": len(pts),
-                "lonlat_warning": looks_like_lonlat(pts)}
+                "lonlat_warning": looks_like_lonlat(pts),
+                "crs_guess": guess_crs(pts)}
 
     @app.post("/api/georef")
     async def georef_apply(payload: dict = Body(...)):
@@ -881,6 +968,37 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 georef2, residuals, rms = georef_from_gcps(gcps, epsg)
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(400, str(exc))
+
+            if epsg and gcps:
+                from boneseg.data.crs_guess import region_check
+
+                def _centroid(pts):
+                    return (sum(g["e"] for g in pts) / len(pts),
+                            sum(g["n"] for g in pts) / len(pts))
+
+                warn = region_check(epsg, *_centroid(gcps))
+                if warn:
+                    # auto_assign_gcps's mirror test (above) picks click<->point
+                    # orientation from GEOMETRY alone — blind to absolute
+                    # position, it can conflict with the real CRS for a
+                    # near-symmetric cluster (a grave's few corner points are
+                    # almost always close to symmetric). Retry with E/N
+                    # globally flipped; if that lands in-region, the CRS wins.
+                    flipped = [{**g, "e": g["n"], "n": g["e"]} for g in gcps]
+                    if not region_check(epsg, *_centroid(flipped)):
+                        try:
+                            georef2, residuals, rms = georef_from_gcps(flipped, epsg)
+                            gcps = flipped
+                            warn = None
+                            extras["region_corrected"] = True
+                            if "matched" in extras:
+                                extras["matched"] = [
+                                    {**m, "e": m["n"], "n": m["e"]}
+                                    for m in extras["matched"]]
+                        except (ValueError, RuntimeError):
+                            pass  # keep the original fit; the warning stands
+                if warn:
+                    extras["region_warning"] = warn
 
             state.georef = georef2
             _rewire(georef2)
@@ -1011,6 +1129,22 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         logger.info("Staged %d dropped image(s) in %s (%d skipped)",
                     len(saved), stage, len(skipped))
         return {"dir": str(stage), "count": len(saved), "skipped": skipped}
+
+    @app.post("/api/list_images")
+    async def list_images(payload: dict = Body(...)):
+        """List a folder's supported images for the batch-GCP queue — a
+        read-only sibling of /api/batch's own file scan, plus whether each
+        already has a GCP sidecar (so the queue can show what's done)."""
+        in_dir = Path(str(payload.get("dir", "")).strip().strip('"'))
+        if not in_dir.is_dir():
+            raise HTTPException(400, f"Folder does not exist: {in_dir}")
+        files = sorted(
+            p for p in in_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS)
+        return {"files": [
+            {"name": p.name, "path": str(p),
+             "georeferenced": gcps_sidecar_path(p).is_file()}
+            for p in files], "n": len(files)}
 
     @app.post("/api/batch")
     async def batch(payload: dict = Body(...)):

@@ -60,6 +60,18 @@ const S = {
   vecPen: null,           // in-progress new polyline (edit-res points) or null
   vecHistory: [], vecRedo: [],   // JSON snapshots of S.vectors for undo/redo
 
+  // SAM2 promptable segmentation (any feature, not just bones) — a prompt
+  // session accumulates points/one box, previews a candidate mask from the
+  // server, and "Accept" draws it into S.mask exactly like a brush stroke
+  // (same undo history + Apply-edits path as everything else).
+  samPoints: [],          // [{x,y,positive}] edit-res coords
+  samBox: null,           // {x0,y0,x1,y1} edit-res coords, or null
+  samBoxLive: null,       // in-progress drag rectangle, or null
+  samDragStart: null,     // {x,y,shift,sx,sy} while a pointer is down
+  samPreview: null,       // ImageBitmap of the last predicted mask, or null
+  samScore: null,
+  samBusy: false,
+
   jobTimer: null,
   busy: false,
 };
@@ -83,19 +95,26 @@ function activeLayer(tool = S.tool) {
   return "mask";
 }
 function layerCtx(layer) { return layer === "skel" ? S.skelCtx : S.maskCtx; }
+/* Tools that edit the centerline VECTORS (S.vectors) rather than a raster
+ * layer — they share the vector undo/redo stack. The eraser is vector-based
+ * only over Skeleton/Clean (where it trims centerlines); over the mask it
+ * paints raster like the brush. */
+function vectorToolActive() {
+  return S.tool === "pen" || S.tool === "node" ||
+         (S.tool === "eraser" && activeLayer() === "skel");
+}
 function markLayerDirty(layer) {
   if (layer === "skel") S.skelTint = null; else S.tintDirty = true;
 }
 
-/* Centerlines are DISPLAYED as crisp vector paths (exactly what the export
- * writes) whenever there are no pending local centerline edits; during
- * editing the AA raster edit canvas is shown instead, so eraser strokes
- * remove lines live. */
+/* Whether any raster centerline edit is pending vs the server's vectors —
+ * used to decide the "Apply edits" skeleton diff (skel_add / skel_rem). */
 function hasPendingSkelEdits() {
   return S.stroke?.layer === "skel" ||
          S.history.some((e) => e.layer === "skel") ||
          S.redoStack.some((e) => e.layer === "skel");
 }
+
 
 function strokeVectors(c2d, color) {
   if (!S.vectorPaths) return;
@@ -205,10 +224,10 @@ function draw() {
       ctx.drawImage(S.tint, 0, 0);
       ctx.globalAlpha = 1;
     }
-    // While the line pen or node tool is in hand, show the centerlines.
-    if (S.hasSkel && (S.tool === "pen" || S.tool === "node" || S.stroke?.layer === "skel")) {
-      if (hasPendingSkelEdits()) ctx.drawImage(S.skel, 0, 0);
-      else strokeVectors(ctx, SKEL_COLOR);
+    // While the line pen or node tool is in hand, show the centerlines
+    // (always crisp vectors — never a rasterized skeleton).
+    if (S.hasSkel && (S.tool === "pen" || S.tool === "node")) {
+      strokeVectors(ctx, SKEL_COLOR);
     }
   } else if (S.mode === "mask") {
     ctx.fillStyle = "#000";
@@ -220,22 +239,27 @@ function draw() {
     ctx.globalAlpha = 0.45;
     ctx.drawImage(S.photo, 0, 0);
     ctx.globalAlpha = 1;
-    if (S.hasSkel) {
-      if (hasPendingSkelEdits()) ctx.drawImage(S.skel, 0, 0);
-      else strokeVectors(ctx, SKEL_COLOR);
-    }
+    if (S.hasSkel) strokeVectors(ctx, SKEL_COLOR);
   } else if (S.mode === "clean") {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, ew, eh);
-    if (S.hasSkel) {
-      if (hasPendingSkelEdits()) { updateSkelTint(); ctx.drawImage(S.skelTint, 0, 0); }
-      else strokeVectors(ctx, "#000000");
-    }
+    if (S.hasSkel) strokeVectors(ctx, "#000000");
   }
 
   if (S.selection) {
     const onSkelView = S.mode === "skeleton" || S.mode === "clean";
-    if ((S.selection.layer === "skel") === onSkelView) {
+    if (S.selection.vectorLi != null) {
+      // Highlight the selected centerline vector (crisp, screen-constant width).
+      const path = S.vectorPaths && S.vectorPaths[S.selection.vectorLi];
+      if (path && (S.tool === "select" || onSkelView)) {
+        ctx.save();
+        ctx.strokeStyle = "#ffd400";
+        ctx.lineWidth = Math.max(2.5 / S.view.k, 0.2);
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        ctx.stroke(path);
+        ctx.restore();
+      }
+    } else if ((S.selection.layer === "skel") === onSkelView) {
       ctx.drawImage(S.selection.canvas, S.selection.x, S.selection.y);
     }
   }
@@ -351,6 +375,40 @@ function draw() {
     });
   }
 
+  // SAM prompt session: candidate mask preview (image space), then
+  // points/box markers (screen space, constant size).
+  if (S.tool === "sam" && S.samPreview) {
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * tx, dpr * ty);
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(S.samPreview, 0, 0);
+    ctx.globalAlpha = 1;
+  }
+  if (S.tool === "sam") {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const box = S.samBoxLive || S.samBox;
+    if (box) {
+      ctx.strokeStyle = "#ffa500";
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([6, 4]);
+      const sx0 = S.view.tx + box.x0 * k, sy0 = S.view.ty + box.y0 * k;
+      const sx1 = S.view.tx + box.x1 * k, sy1 = S.view.ty + box.y1 * k;
+      ctx.strokeRect(Math.min(sx0, sx1), Math.min(sy0, sy1), Math.abs(sx1 - sx0), Math.abs(sy1 - sy0));
+      ctx.setLineDash([]);
+    }
+    for (const pt of S.samPoints) {
+      const sx = S.view.tx + pt.x * k, sy = S.view.ty + pt.y * k;
+      ctx.strokeStyle = pt.positive ? "#3dff8a" : "#ff4040";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - 3, sy); ctx.lineTo(sx + 3, sy);
+      if (!pt.positive) { /* minus sign only */ } else { ctx.moveTo(sx, sy - 3); ctx.lineTo(sx, sy + 3); }
+      ctx.stroke();
+    }
+  }
+
   // Brush cursor (screen space) — mask paint tools only.
   if (S.pointer.over && (S.tool === "brush" || S.tool === "eraser")) {
     const size = S.tool === "brush" ? S.brushSize : S.eraserSize;
@@ -446,7 +504,7 @@ function redo() {
 }
 
 function updateEditButtons() {
-  const vecCtx = S.tool === "node" || S.tool === "pen";
+  const vecCtx = vectorToolActive();
   $("#undobtn").disabled = vecCtx ? S.vecHistory.length === 0 : S.history.length === 0;
   $("#redobtn").disabled = vecCtx ? S.vecRedo.length === 0 : S.redoStack.length === 0;
   $("#applyedits").disabled = !(S.dirty || S.vecDirty) || !S.result;
@@ -519,7 +577,20 @@ function clearSelection() {
 function selectComponentAt(ix, iy) {
   if (!S.hasMask) { toast("Run inference first — there is no mask yet."); return; }
   const layer = activeLayer("select");
-  const what = layer === "skel" ? "centerline" : "mask component";
+  // On the skeleton the "component" is a VECTOR centerline: pick the whole
+  // polyline under the cursor so Delete removes it as a vector (crisp, no
+  // raster round-trip).
+  if (layer === "skel") {
+    const tol = NODE_HIT_PX / S.view.k;
+    const seg = nearestSegment(ix, iy, Math.max(tol, 6 / S.view.k));
+    if (!seg) { clearSelection(); toast("No centerline under that point."); return; }
+    S.selection = { layer: "skel", vectorLi: seg.li };
+    updateEditButtons();
+    requestDraw();
+    toast("Selected centerline — press Delete to remove it.", "ok", 3500);
+    return;
+  }
+  const what = "mask component";
   const ew = S.edit.width, eh = S.edit.height;
   const x0 = Math.floor(ix), y0 = Math.floor(iy);
   if (x0 < 0 || y0 < 0 || x0 >= ew || y0 >= eh) return;
@@ -589,6 +660,19 @@ function selectComponentAt(ix, iy) {
 function deleteSelection() {
   const sel = S.selection;
   if (!sel) return;
+  if (sel.vectorLi != null) {           // vector centerline selection
+    if (S.vectors && S.vectors[sel.vectorLi]) {
+      snapshotVectors();
+      S.vectors.splice(sel.vectorLi, 1);
+      rebuildVectorPaths();
+      markVecDirty();
+    }
+    S.selection = null;
+    updateEditButtons();
+    requestDraw();
+    toast("Centerline deleted.", "ok", 2500);
+    return;
+  }
   const ctx2 = layerCtx(sel.layer);
   const before = ctx2.getImageData(sel.x, sel.y, sel.w, sel.h);
   const cur = ctx2.getImageData(sel.x, sel.y, sel.w, sel.h);
@@ -699,9 +783,93 @@ function nearestSegment(ix, iy, tol) {
   return best;
 }
 
+/* --- vector eraser: trim centerline polylines in place ------------------- */
+/* Resample a polyline so no gap between consecutive points exceeds `step`,
+ * so the circular eraser can cut mid-segment (not only at existing vertices). */
+function densifyLine(line, step) {
+  if (line.length < 2) return line.slice();
+  const out = [];
+  for (let i = 0; i < line.length - 1; i++) {
+    const [x0, y0] = line[i], [x1, y1] = line[i + 1];
+    const d = Math.hypot(x1 - x0, y1 - y0);
+    const n = Math.max(1, Math.ceil(d / step));
+    for (let k = 0; k < n; k++) out.push([x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n]);
+  }
+  out.push(line[line.length - 1].slice());
+  return out;
+}
+
+/* Remove every polyline point within `r` of any point on the eraser stroke
+ * segment (ex0,ey0)->(ex1,ey1); surviving runs of >=2 points become lines,
+ * so erasing the middle of a line SPLITS it. Returns true if anything changed.
+ * Operates directly on S.vectors — the centerlines stay crisp vectors, no
+ * raster round-trip. */
+function eraseVectorsAlong(ex0, ey0, ex1, ey1, r) {
+  if (!S.vectors || !S.vectors.length) return false;
+  const r2 = r * r;
+  const step = Math.max(1, r / 2);
+  // Pre-sample the eraser stroke itself so a fast drag still cuts continuously.
+  const segLen = Math.hypot(ex1 - ex0, ey1 - ey0);
+  const en = Math.max(1, Math.ceil(segLen / step));
+  const epts = [];
+  for (let k = 0; k <= en; k++) epts.push([ex0 + (ex1 - ex0) * k / en, ey0 + (ey1 - ey0) * k / en]);
+  const minEx = Math.min(ex0, ex1) - r, maxEx = Math.max(ex0, ex1) + r;
+  const minEy = Math.min(ey0, ey1) - r, maxEy = Math.max(ey0, ey1) + r;
+  const erased = (x, y) => {
+    for (const [px, py] of epts) {
+      const dx = x - px, dy = y - py;
+      if (dx * dx + dy * dy <= r2) return true;
+    }
+    return false;
+  };
+  let changed = false;
+  const result = [];
+  for (const line of S.vectors) {
+    // bbox cull: skip lines the eraser can't possibly touch
+    let miX = Infinity, miY = Infinity, maX = -Infinity, maY = -Infinity;
+    for (const [x, y] of line) {
+      if (x < miX) miX = x; if (x > maX) maX = x;
+      if (y < miY) miY = y; if (y > maY) maY = y;
+    }
+    if (maX < minEx || miX > maxEx || maY < minEy || miY > maxEy) { result.push(line); continue; }
+    const dl = densifyLine(line, step);
+    let cur = [], hit = false;
+    for (const p of dl) {
+      if (erased(p[0], p[1])) { hit = true; if (cur.length >= 2) result.push(cur); cur = []; }
+      else cur.push(p);
+    }
+    if (!hit) { result.push(line); continue; }   // untouched — keep original
+    if (cur.length >= 2) result.push(cur);
+    changed = true;
+  }
+  if (changed) { S.vectors = result; rebuildVectorPaths(); }
+  return changed;
+}
+
 /* Snap target for the line pen: endpoints of existing lines win (that's how
  * you JOIN a new line to an old one), then any vertex, then the closest
- * point ON a segment (so you can T-join into the middle of a line). */
+ * point ON a segment (so you can T-join into the middle of a line).
+ *
+ * Snaps to ALL present centerlines — the user's own drawn lines AND the ones
+ * the model produced. Only snaps to points that are actually VISIBLE: when a
+ * raster skeleton edit is pending, a line the user just erased still lingers
+ * in S.vectors until "Apply edits", so we reject any candidate whose pixel is
+ * gone from the rendered skeleton raster — that was the source of the pen
+ * snapping to "points that aren't there". */
+function snapVisible(x, y) {
+  // Only gate on visibility while the raster skeleton view is authoritative
+  // (pending edits); otherwise S.vectors == what's drawn, so accept.
+  if (!hasPendingSkelEdits() || !S.skelCtx) return true;
+  const px = Math.round(x), py = Math.round(y);
+  if (px < 0 || py < 0 || px >= S.skel.width || py >= S.skel.height) return true;
+  // small neighborhood: the rendered stroke is a few px wide
+  const r = 3;
+  const x0 = Math.max(0, px - r), y0 = Math.max(0, py - r);
+  const w = Math.min(S.skel.width - x0, r * 2 + 1), h = Math.min(S.skel.height - y0, r * 2 + 1);
+  const d = S.skelCtx.getImageData(x0, y0, w, h).data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 10) return true;
+  return false;
+}
 function snapPoint(ix, iy) {
   const tol = SNAP_PX / S.view.k;
   const V = S.vectors || [];
@@ -710,14 +878,18 @@ function snapPoint(ix, iy) {
     const line = V[li];
     for (const vi of [0, line.length - 1]) {
       const d = Math.hypot(ix - line[vi][0], iy - line[vi][1]);
-      if (d <= tol && (!end || d < end.d)) end = { x: line[vi][0], y: line[vi][1], d };
+      if (d <= tol && (!end || d < end.d) && snapVisible(line[vi][0], line[vi][1]))
+        end = { x: line[vi][0], y: line[vi][1], d };
     }
   }
   if (end) return { x: end.x, y: end.y, kind: "end" };
   const v = nearestVertex(ix, iy, tol);
-  if (v) { const p = V[v.li][v.vi]; return { x: p[0], y: p[1], kind: "vertex" }; }
+  if (v) {
+    const p = V[v.li][v.vi];
+    if (snapVisible(p[0], p[1])) return { x: p[0], y: p[1], kind: "vertex" };
+  }
   const seg = nearestSegment(ix, iy, tol);
-  if (seg) return { x: seg.cx, y: seg.cy, kind: "segment" };
+  if (seg && snapVisible(seg.cx, seg.cy)) return { x: seg.cx, y: seg.cy, kind: "segment" };
   return null;
 }
 
@@ -852,6 +1024,118 @@ function deleteNode() {
   requestDraw();
 }
 
+/* --- SAM2 promptable segmentation (any feature, not just bones) -------- */
+function updateSamStatus() {
+  const el = $("#samstatus");
+  if (!el) return;
+  const n = S.samPoints.length;
+  const parts = [];
+  if (n) parts.push(`${n} point${n === 1 ? "" : "s"}`);
+  if (S.samBox) parts.push("1 box");
+  if (S.samBusy) {
+    el.textContent = parts.length ? `${parts.join(" + ")} — predicting…` : "Predicting…";
+  } else if (S.samPreview) {
+    const pct = S.samScore != null ? ` (confidence ${Math.round(S.samScore * 100)}%)` : "";
+    el.textContent = `${parts.join(" + ")} — preview ready${pct}. Accept, add more, or Esc to clear.`;
+  } else if (parts.length) {
+    el.textContent = `${parts.join(" + ")}.`;
+  } else {
+    el.textContent = "Click = include, Shift+click = exclude, drag = box.";
+  }
+  $("#samaccept").disabled = !S.samPreview;
+  $("#samclear").disabled = !n && !S.samBox;
+}
+
+let samReqId = 0;
+async function samPredict() {
+  if (!S.samPoints.length && !S.samBox) { S.samPreview = null; updateSamStatus(); requestDraw(); return; }
+  const myReq = ++samReqId;
+  S.samBusy = true;
+  updateSamStatus();
+  try {
+    const r = await fetch("/api/sam/predict", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        points: S.samPoints.map((p) => ({ x: p.x, y: p.y, positive: p.positive })),
+        box: S.samBox,
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    if (myReq !== samReqId) return;   // superseded by a newer prompt
+    S.samScore = parseFloat(r.headers.get("X-Sam-Score") || "0");
+    const blob = await r.blob();
+    if (S.samPreview) S.samPreview.close();
+    S.samPreview = await createImageBitmap(blob);
+  } catch (err) {
+    toast(`SAM prediction failed: ${err.message}`, "error", 8000);
+  } finally {
+    if (myReq === samReqId) S.samBusy = false;
+    updateSamStatus();
+    requestDraw();
+  }
+}
+
+function samFinishDrag(e) {
+  const start = S.samDragStart;
+  S.samDragStart = null;
+  const live = S.samBoxLive;
+  S.samBoxLive = null;
+  if (!start) return;
+  // No pointermove fired at all (fast click) or near-zero movement — both
+  // are a point click, not a box.
+  const distScreen = live ? Math.hypot(e.offsetX - start.sx, e.offsetY - start.sy) : 0;
+  if (!live || distScreen < 6) {
+    S.samPoints.push({ x: start.x, y: start.y, positive: !start.shift });
+  } else {
+    S.samBox = {
+      x0: Math.min(live.x0, live.x1), y0: Math.min(live.y0, live.y1),
+      x1: Math.max(live.x0, live.x1), y1: Math.max(live.y0, live.y1),
+    };
+  }
+  samPredict();
+}
+
+function samClear() {
+  S.samPoints = []; S.samBox = null; S.samBoxLive = null; S.samDragStart = null;
+  if (S.samPreview) { S.samPreview.close(); S.samPreview = null; }
+  S.samScore = null; S.samBusy = false;
+  samReqId++;   // orphan any in-flight predict so it can't land after clear
+  updateSamStatus();
+  requestDraw();
+}
+
+function samAccept() {
+  if (!S.samPreview) { toast("Nothing to accept yet — click a point or drag a box first.", "error", 5000); return; }
+  S.backupCtx.clearRect(0, 0, S.backup.width, S.backup.height);
+  S.backupCtx.drawImage(S.mask, 0, 0);
+  S.maskCtx.save();
+  S.maskCtx.globalCompositeOperation = "source-over";
+  S.maskCtx.drawImage(S.samPreview, 0, 0);
+  S.maskCtx.restore();
+  markLayerDirty("mask");
+  const rect = { x: 0, y: 0, w: S.mask.width, h: S.mask.height };
+  pushHistory(rect, S.backupCtx.getImageData(0, 0, rect.w, rect.h), "mask");
+  toast("Region added to the mask — Apply edits to save, or keep annotating.", "ok", 6000);
+  samClear();
+}
+
+$("#samaccept").addEventListener("click", samAccept);
+$("#samclear").addEventListener("click", samClear);
+$("#samblank").addEventListener("click", async () => {
+  setBusy(true);
+  try {
+    const sum = await apiPost("/api/blank_canvas", {});
+    applySummary(sum);
+    await loadMaskAndSkeleton();
+    updateStats();
+    toast("Blank canvas ready — click points or drag a box to segment a feature.", "ok");
+  } catch (err) {
+    toast(`Could not start a blank canvas: ${err.message}`, "error", 8000);
+  } finally {
+    setBusy(false);
+  }
+});
+
 /* --- vector line pen (click to place points) --------------------------- */
 function vecPenAdd(ix, iy) {
   if (!S.result) { toast("Run inference first, then draw centerlines."); return; }
@@ -873,7 +1157,8 @@ function finishVecPen(commit) {
   if (commit && pts && pts.length >= 2) {
     snapshotVectors();
     if (!S.vectors) S.vectors = [];
-    S.vectors.push(pts.map((p) => [p[0], p[1]]));
+    const line = pts.map((p) => [p[0], p[1]]);
+    S.vectors.push(line);
     rebuildOnePath(S.vectors.length - 1);
     S.hasSkel = true;
     markVecDirty();
@@ -908,6 +1193,9 @@ canvas.addEventListener("pointerdown", (e) => {
   try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic/stale pointer */ }
   const wantPan = e.button === 1 || e.button === 2 || S.spaceDown || S.tool === "pan";
   if (wantPan) {
+    // Middle click otherwise triggers the browser's native autoscroll mode,
+    // which hijacks the drag instead of panning the canvas.
+    e.preventDefault();
     S.pan = { x: e.offsetX, y: e.offsetY };
     canvas.classList.add("panning");
     return;
@@ -919,6 +1207,15 @@ canvas.addEventListener("pointerdown", (e) => {
   } else if (S.tool === "node") {
     // Grab a vertex / select a line; on empty space start a marquee rectangle.
     if (!nodeSelectAt(p.x, p.y)) S.nodeMarquee = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+  } else if (S.tool === "eraser" && activeLayer() === "skel") {
+    // Vector eraser: over Skeleton/Clean the eraser trims the centerline
+    // polylines directly, so lines stay crisp vectors while erasing (no raster).
+    if (!S.vectors || !S.vectors.length) { toast("No centerlines to erase yet."); return; }
+    clearSelection();
+    snapshotVectors();
+    S.vecErase = { lastX: p.x, lastY: p.y, changed: false };
+    if (eraseVectorsAlong(p.x, p.y, p.x, p.y, S.eraserSize / 2)) S.vecErase.changed = true;
+    requestDraw();
   } else if (S.tool === "brush" || S.tool === "eraser") {
     if (!S.hasMask) { toast("Run inference first, then paint corrections."); return; }
     // The brush edits the mask — painting blind over Skeleton/Clean would be
@@ -931,6 +1228,12 @@ canvas.addEventListener("pointerdown", (e) => {
     selectComponentAt(p.x, p.y);
   } else if (S.tool === "gcp") {
     gcpAddPoint(p.x, p.y);
+  } else if (S.tool === "sam") {
+    if (!S.result) {
+      toast("Run inference first, or click “Start blank canvas” to annotate without it.", "error", 8000);
+      return;
+    }
+    S.samDragStart = { x: p.x, y: p.y, shift: e.shiftKey, sx: e.offsetX, sy: e.offsetY };
   }
 });
 
@@ -948,6 +1251,12 @@ canvas.addEventListener("pointermove", (e) => {
     strokeSegment(S.stroke.lastX, S.stroke.lastY, p.x, p.y);
     S.stroke.lastX = p.x; S.stroke.lastY = p.y;
   }
+  if (S.vecErase) {
+    const p = toImage(e.offsetX, e.offsetY);
+    if (eraseVectorsAlong(S.vecErase.lastX, S.vecErase.lastY, p.x, p.y, S.eraserSize / 2))
+      S.vecErase.changed = true;
+    S.vecErase.lastX = p.x; S.vecErase.lastY = p.y;
+  }
   if (S.nodeDrag) {
     const p = toImage(e.offsetX, e.offsetY);
     nodeDragTo(p.x, p.y);
@@ -956,14 +1265,25 @@ canvas.addEventListener("pointermove", (e) => {
     const p = toImage(e.offsetX, e.offsetY);
     S.nodeMarquee.x1 = p.x; S.nodeMarquee.y1 = p.y;
   }
+  if (S.samDragStart) {
+    const p = toImage(e.offsetX, e.offsetY);
+    S.samBoxLive = { x0: S.samDragStart.x, y0: S.samDragStart.y, x1: p.x, y1: p.y };
+  }
   requestDraw();
 });
 
-function endPointer() {
+function endPointer(e) {
   if (S.pan) { S.pan = null; canvas.classList.remove("panning"); }
   if (S.stroke) strokeEnd();
+  if (S.vecErase) {
+    const changed = S.vecErase.changed;
+    S.vecErase = null;
+    if (changed) markVecDirty();
+    else S.vecHistory.pop();   // nothing erased — discard the snapshot we took
+  }
   if (S.nodeDrag) nodeDragEnd();
   if (S.nodeMarquee) marqueeFinish();
+  if (S.samDragStart) samFinishDrag(e);
   requestDraw();
 }
 canvas.addEventListener("pointerup", endPointer);
@@ -997,9 +1317,9 @@ window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
   }
   if (e.code === "Space") { S.spaceDown = true; return; }
-  // Node/pen tools have their own vector undo stack; other tools use the
-  // raster (paint) history.
-  const vecCtx = S.tool === "node" || S.tool === "pen";
+  // Vector tools (pen / node / skeleton eraser) have their own vector undo
+  // stack; other tools use the raster (paint) history.
+  const vecCtx = vectorToolActive();
   if (e.ctrlKey && e.key.toLowerCase() === "z") {
     e.preventDefault();
     if (e.shiftKey) { vecCtx ? vecRedo() : redo(); } else { vecCtx ? vecUndo() : undo(); }
@@ -1015,6 +1335,7 @@ window.addEventListener("keydown", (e) => {
     case "h": case "H": case "v": case "V": setTool("pan"); break;
     case "s": case "S": setTool("select"); break;
     case "g": case "G": setTool("gcp"); break;
+    case "m": case "M": setTool("sam"); break;
     case "f": case "F": fitView(); break;
     case "1": setMode("overlay"); break;
     case "2": setMode("original"); break;
@@ -1023,7 +1344,10 @@ window.addEventListener("keydown", (e) => {
     case "5": setMode("clean"); break;
     case "[": bumpSize(-2); break;
     case "]": bumpSize(2); break;
-    case "Enter": if (S.vecPen) { e.preventDefault(); finishVecPen(true); } break;
+    case "Enter":
+      if (S.vecPen) { e.preventDefault(); finishVecPen(true); }
+      else if (S.tool === "sam" && S.samPreview) { e.preventDefault(); samAccept(); }
+      break;
     case "Delete": case "Backspace":
       if (S.tool === "node" && S.nodeMulti.length) { e.preventDefault(); deleteMarkedNodes(); }
       else if (S.tool === "node" && S.nodeSel) { e.preventDefault(); deleteNode(); }
@@ -1031,6 +1355,7 @@ window.addEventListener("keydown", (e) => {
       break;
     case "Escape":
       if (S.vecPen) finishVecPen(false);
+      else if (S.tool === "sam" && (S.samPoints.length || S.samBox || S.samPreview)) samClear();
       else if (S.nodeMulti.length) { S.nodeMulti = []; updateEditButtons(); requestDraw(); }
       else if (S.nodeSel) { S.nodeSel = null; requestDraw(); }
       else clearSelection();
@@ -1047,10 +1372,13 @@ const SIZE_KEYS = { brush: "brushSize", eraser: "eraserSize" };
 function setTool(tool) {
   if (S.vecPen && tool !== "pen") finishVecPen(true);   // commit a dangling line
   if (tool !== "node") { S.nodeSel = null; S.nodeMulti = []; S.nodeMarquee = null; }
+  if (tool !== "sam" && S.tool === "sam") samClear();   // drop a dangling prompt session
   S.tool = tool;
   $$("#tools .tbtn").forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
   canvas.className = `tool-${tool}`;
   $("#gcppanel").hidden = tool !== "gcp";
+  $("#sampanel").hidden = tool !== "sam";
+  if (tool === "sam") updateSamStatus();
   const hasSize = tool in SIZE_KEYS;
   $("#sizegroup").hidden = !hasSize;
   if (hasSize) {
@@ -1085,8 +1413,8 @@ $("#toolsize").addEventListener("input", (e) => {
   $("#toolsizeval").textContent = `${v} px`;
   requestDraw();
 });
-$("#undobtn").addEventListener("click", () => (S.tool === "node" || S.tool === "pen") ? vecUndo() : undo());
-$("#redobtn").addEventListener("click", () => (S.tool === "node" || S.tool === "pen") ? vecRedo() : redo());
+$("#undobtn").addEventListener("click", () => vectorToolActive() ? vecUndo() : undo());
+$("#redobtn").addEventListener("click", () => vectorToolActive() ? vecRedo() : redo());
 $("#delselbtn").addEventListener("click", () =>
   S.nodeMulti.length ? deleteMarkedNodes() : deleteSelection());
 $("#fitbtn").addEventListener("click", fitView);
@@ -1270,17 +1598,31 @@ $("#fileinput").addEventListener("change", (e) => {
   if (e.target.files[0]) openImage(e.target.files[0]);
   e.target.value = "";
 });
+function isDirDrop(dt) {
+  for (const it of dt.items || []) {
+    const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+    if (en && en.isDirectory) return true;
+  }
+  return false;
+}
+
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => {
   e.preventDefault();
   // With the batch panel open every drop is a batch drop, even if the
   // user misses the dashed zone.
-  if (batchPanelOpen()) { stageBatchDrop(e.dataTransfer); return; }
+  if (batchPanelOpen()) { stageDrop(e.dataTransfer, "batch"); return; }
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
   if (!f) return;
   // A coordinate file dropped while georeferencing loads GCP points, even
   // if the user misses the panel's dashed zone.
   if (S.tool === "gcp" && GCP_FILE_RE.test(f.name)) { gcpLoadFile(f); return; }
+  // A folder (or multiple images) dropped while georeferencing is a
+  // batch-GCP queue, even outside the dashed #gcpbatchdrop zone.
+  if (S.tool === "gcp" && (e.dataTransfer.files.length > 1 || isDirDrop(e.dataTransfer))) {
+    stageDrop(e.dataTransfer, "gcp");
+    return;
+  }
   openImage(f);
 });
 
@@ -1469,6 +1811,30 @@ let gcps = [];       // {px, py, e, n, id} — px/py in edit-image coords
 let gcpQueue = [];   // parsed-but-unclicked points {id, e, n}
 let gcpPoints = [];  // ALL parsed file/paste points — auto-match uses these,
                      // so click order (and extra unclicked points) don't matter
+let gcpBatchFiles = [];   // [{name, path, georeferenced}] — batch-GCP queue
+let gcpBatchIndex = -1;   // current index into gcpBatchFiles; -1 = no batch loaded
+
+/* A multi-grave master file (one txt with every grave's points, grouped by
+   a trailing code column) is filtered down to one grave by #gcpcodefilter
+   — server-side auto-match caps at 40 points, and this is also just less
+   error-prone than matching clicks against every grave on the site. */
+function currentGcpPool() {
+  const code = ($("#gcpcodefilter").value || "").trim().toLowerCase();
+  if (!code) return gcpPoints;
+  return gcpPoints.filter((p) => (p.code || "").toLowerCase().includes(code));
+}
+
+function updateCodeList() {
+  const codes = [...new Set(gcpPoints.map((p) => p.code).filter(Boolean))].sort();
+  const dl = $("#gcpcodelist");
+  dl.textContent = "";
+  for (const c of codes) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    dl.appendChild(opt);
+  }
+  $("#gcpcodefilterrow").hidden = codes.length === 0;
+}
 
 /* Point parsing lives on the SERVER (boneseg/data/gcp_parse.py) so txt,
    CSV and Excel all go through one parser; the UI just uploads. */
@@ -1478,13 +1844,44 @@ async function gcpLoadPoints(formData) {
   const res = await r.json();
   gcpPoints = res.points;
   gcpQueue = res.points.slice();
+  $("#gcpcodefilter").value = "";
+  updateCodeList();
   gcpQueueInfo();
   if (res.lonlat_warning) {
     toast("These look like lat/lon DEGREES — georeferencing needs projected " +
           "metric coordinates (e.g. HTRS96/TM). Check the file and the EPSG.",
           "error", 12000);
   }
+  applyCrsGuess(res.crs_guess);
   toast(`${res.n} point(s) loaded — click them on the photo in ANY order.`, "ok", 7000);
+}
+
+/* Pre-fills EPSG + swap from the server's guess_crs() heuristic — always a
+   suggestion, never locked: both fields stay freely editable afterwards. */
+function applyCrsGuess(guess) {
+  const hint = $("#gcpcrsguess");
+  hint.className = "hint";
+  if (!guess || !guess.epsg) {
+    hint.textContent = "";
+    return;
+  }
+  $("#gcpepsg").value = String(guess.epsg);
+  $("#gcpswap").checked = !!guess.swap;
+  if (guess.confidence === "high") {
+    hint.textContent = `🌍 Auto-detected: EPSG:${guess.epsg} (${guess.name})` +
+      (guess.swap ? ", E/N swapped" : "") + " — change above if wrong.";
+    hint.className = "hint ok";
+  } else {
+    const alts = guess.candidates
+      .filter((c) => !(c.epsg === guess.epsg && c.swap === guess.swap))
+      .map((c) => `EPSG:${c.epsg} (${c.name}${c.swap ? ", swapped" : ""})`)
+      .join(" or ");
+    hint.textContent = `⚠ Ambiguous — guessed EPSG:${guess.epsg} (${guess.name})` +
+      (guess.swap ? ", swapped" : "") +
+      (alts ? `, but could be ${alts}` : "") +
+      ". Verify against a known point/GPS photo.";
+    hint.className = "hint bad";
+  }
 }
 
 async function gcpLoadFile(file) {
@@ -1514,14 +1911,19 @@ $("#gcpdrop").addEventListener("drop", (e) => {
 });
 
 function gcpQueueInfo() {
-  const auto = $("#gcpauto").checked && gcpPoints.length >= 3;
+  const pool = currentGcpPool();
+  const auto = $("#gcpauto").checked && pool.length >= 3;
   $("#gcpqueue").textContent = gcpQueue.length
     ? (auto
-        ? `${gcpPoints.length} point(s) loaded — click each on the photo, any order (auto-match on Apply).`
+        ? `${pool.length} point(s) in pool — click each on the photo, any order (auto-match on Apply).`
         : `${gcpQueue.length} point(s) left — next click places “${gcpQueue[0].id || gcpQueue[0].e}”.`)
     : "";
 }
 $("#gcpauto").addEventListener("change", gcpQueueInfo);
+$("#gcpcodefilter").addEventListener("input", () => {
+  gcpQueue = currentGcpPool().slice();
+  gcpQueueInfo();
+});
 
 function gcpAddPoint(x, y) {
   const q = gcpQueue.shift();
@@ -1567,8 +1969,12 @@ $("#gcpparse").addEventListener("click", async () => {
 
 function gcpReset(alsoQueue = true) {
   gcps = [];
-  if (alsoQueue) { gcpQueue = []; gcpPoints = []; $("#gcppaste").value = ""; }
-  else { gcpQueue = gcpPoints.slice(); }  // same grave file, next photo
+  $("#gcpcodefilter").value = "";  // each new photo/grave starts unfiltered
+  if (alsoQueue) {
+    gcpQueue = []; gcpPoints = []; $("#gcppaste").value = "";
+    $("#gcpcrsguess").textContent = ""; $("#gcpcrsguess").className = "hint";
+    updateCodeList();
+  } else { gcpQueue = currentGcpPool().slice(); }  // same master file, next photo
   gcpQueueInfo();
   renderGcpTable();
   $("#gcpstatus").textContent = "";
@@ -1581,18 +1987,21 @@ $("#gcpapply").addEventListener("click", async () => {
   if (gcps.length < 3) { toast("Place at least 3 points on the photo first.", "error", 6000); return; }
   // Auto-match: with a loaded point list the pairing is found geometrically
   // on the server, so neither the click order nor the file order matters.
-  const auto = $("#gcpauto").checked && gcpPoints.length >= 3;
+  // The grave-code filter (multi-grave master files) narrows this pool —
+  // auto-matching caps at 40 points server-side.
+  const pool = currentGcpPool();
+  const auto = $("#gcpauto").checked && pool.length >= 3;
   let payload;
   if (auto) {
-    if (gcpPoints.length < gcps.length) {
-      toast(`You clicked ${gcps.length} spots but the file has only ` +
-            `${gcpPoints.length} points — remove extra clicks (✕).`, "error", 8000);
+    if (pool.length < gcps.length) {
+      toast(`You clicked ${gcps.length} spots but the point pool has only ` +
+            `${pool.length} — remove extra clicks (✕) or narrow the grave-code filter.`, "error", 8000);
       return;
     }
     payload = {
       auto: true,
       clicks: gcps.map((g) => ({ px: g.px, py: g.py })),
-      points: gcpPoints.map((p) => ({ id: p.id, e: p.e, n: p.n })),
+      points: pool.map((p) => ({ id: p.id, e: p.e, n: p.n })),
     };
   } else {
     for (const g of gcps) {
@@ -1622,8 +2031,12 @@ $("#gcpapply").addEventListener("click", async () => {
     updateStats();
     const st = $("#gcpstatus");
     const worst = Math.max(...res.residuals_m);
-    st.className = (worst > 0.15 || res.ambiguous) ? "hint bad" : "hint ok";
+    st.className = (worst > 0.15 || res.ambiguous || res.region_warning || res.region_corrected) ? "hint bad" : "hint ok";
     st.innerHTML =
+      (res.region_warning ? `⚠⚠ ${res.region_warning}<br>` : "") +
+      (res.region_corrected ? "<br>⚠ The auto-match's click-orientation guess conflicted with the " +
+                              "surveyed CRS (near-symmetric point layout) — E/N were flipped back to " +
+                              "match the CRS. Verify in QGIS." : "") +
       `Applied (<b>${res.mode === "homography" ? "perspective" : "affine"}</b>) — ` +
       `RMS <b>${(res.rms_m * 100).toFixed(1)} cm</b>, per point: ` +
       res.residuals_m.map((r, i) => `#${i + 1} ${(r * 100).toFixed(1)}`).join(", ") + " cm." +
@@ -1642,12 +2055,87 @@ $("#gcpapply").addEventListener("click", async () => {
       (res.world_files.length
         ? `<br>World file written (${res.world_files.join(", ")}) — the photo now opens georeferenced in QGIS.`
         : "");
-    toast(`Georeferenced — RMS ${(res.rms_m * 100).toFixed(1)} cm. Exports are now in real coordinates.`, "ok", 8000);
+    if (res.region_warning) {
+      toast(`⚠ ${res.region_warning}`, "error", 15000);
+    } else if (res.region_corrected) {
+      toast("⚠ Auto-match's orientation guess conflicted with the CRS — E/N flipped back automatically. Verify in QGIS.", "error", 12000);
+    } else {
+      toast(`Georeferenced — RMS ${(res.rms_m * 100).toFixed(1)} cm. Exports are now in real coordinates.`, "ok", 8000);
+    }
+    // Batch-GCP queue: a clean apply (no region_warning — a bad fit needs
+    // the user's eyes before moving on) advances to the next photo.
+    if (gcpBatchIndex >= 0 && !res.region_warning) {
+      gcpBatchFiles[gcpBatchIndex].georeferenced = true;
+      if (gcpBatchIndex < gcpBatchFiles.length - 1) {
+        gcpBatchIndex++;
+        await gcpBatchOpenCurrent();
+      } else {
+        toast("Batch georeferencing done — that was the last image in the folder.", "ok", 9000);
+        gcpBatchStatus();
+      }
+    }
   } catch (err) {
     toast(`Georeferencing failed: ${err.message}`, "error", 9000);
   } finally {
     setBusy(false);
   }
+});
+
+/* Batch-GCP: click-through-all georeferencing of a whole folder. A master
+   points file (all graves, filtered per-photo via #gcpcodefilter) stays
+   loaded across the queue; each Apply above advances automatically. */
+function gcpBatchStatus() {
+  const el = $("#gcpbatchqueue");
+  if (!gcpBatchFiles.length || gcpBatchIndex < 0) { el.textContent = ""; return; }
+  const item = gcpBatchFiles[gcpBatchIndex];
+  const done = gcpBatchFiles.filter((f) => f.georeferenced).length;
+  el.textContent = `${gcpBatchIndex + 1}/${gcpBatchFiles.length} — ${item.name}` +
+    (item.georeferenced ? " ✓ already georeferenced" : "") +
+    ` (${done}/${gcpBatchFiles.length} done)`;
+}
+
+async function gcpBatchOpenCurrent() {
+  if (gcpBatchIndex < 0 || gcpBatchIndex >= gcpBatchFiles.length) return;
+  await openImage(gcpBatchFiles[gcpBatchIndex].path);
+  gcpReset(false);  // keeps the loaded master points, clears clicks + code filter
+  gcpBatchStatus();
+}
+
+async function gcpBatchLoadFolder() {
+  const dir = $("#gcpbatchdir").value.trim();
+  if (!dir) { toast("Enter a folder path first.", "error", 5000); return; }
+  try {
+    const res = await apiPost("/api/list_images", { dir });
+    if (!res.n) { toast("No supported images found in that folder.", "error", 7000); return; }
+    gcpBatchFiles = res.files;
+    gcpBatchIndex = gcpBatchFiles.findIndex((f) => !f.georeferenced);
+    if (gcpBatchIndex === -1) gcpBatchIndex = 0;
+    $("#gcpbatchnav").hidden = false;
+    await gcpBatchOpenCurrent();
+    const done = gcpBatchFiles.filter((f) => f.georeferenced).length;
+    toast(`${res.n} image(s) queued — ${done} already georeferenced, starting at #${gcpBatchIndex + 1}.`, "ok", 7000);
+  } catch (err) {
+    toast(`Could not list folder: ${err.message}`, "error", 8000);
+  }
+}
+$("#gcpbatchload").addEventListener("click", gcpBatchLoadFolder);
+
+/* Jump straight from a finished batch-inference run to georeferencing the
+   SAME folder — no retyping the path. Shown once a batch completes with at
+   least one successful image (see renderBatchTable). */
+$("#gcpbatchlink").addEventListener("click", async () => {
+  const dir = $("#batchin").value.trim();
+  setTool("gcp");
+  if (batchPanelOpen()) $("#batchtoggle").click();
+  $("#gcpbatchdir").value = dir;
+  await gcpBatchLoadFolder();
+});
+$("#gcpbatchprev").addEventListener("click", () => {
+  if (gcpBatchIndex > 0) { gcpBatchIndex--; gcpBatchOpenCurrent(); }
+});
+$("#gcpbatchskip").addEventListener("click", () => {
+  if (gcpBatchIndex < gcpBatchFiles.length - 1) { gcpBatchIndex++; gcpBatchOpenCurrent(); }
+  else toast("That's the last image in the folder.", "", 5000);
 });
 
 /* ------------------------------------------------------------------ */
@@ -1679,6 +2167,7 @@ $("#batchrun").addEventListener("click", async () => {
     watchJob(async (job) => {
       $("#batchsummary").textContent = job.message;
       renderBatchTable(job.rows || []);
+      $("#gcpbatchlink").hidden = !(job.rows || []).some((r) => r.status === "ok");
     });
   } catch (err) {
     toast(err.message, "error", 8000);
@@ -1691,7 +2180,12 @@ const IMG_EXTS = new Set([".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
 
 function batchPanelOpen() { return !$("#batchpanel").hidden; }
 
-async function stageBatchDrop(dt) {
+/* Shared by both drop zones: the batch-inference panel's #batchdrop, and
+   the batch-GCP queue's #gcpbatchdrop. Browsers never expose a dropped
+   folder's real filesystem path (security), so either way the files are
+   uploaded and staged server-side — /api/list_images / /api/batch then
+   just point at that staging folder like any other. */
+async function stageDrop(dt, target = "batch") {
   // webkitGetAsEntry() only works synchronously inside the drop event,
   // so collect the entries before the first await.
   const entries = [];
@@ -1726,18 +2220,25 @@ async function stageBatchDrop(dt) {
   const fd = new FormData();
   for (const f of wanted) fd.append("files", f);
   setBusy(true);
-  $("#batchsummary").textContent = `Uploading ${wanted.length} image(s)…`;
+  if (target === "batch") $("#batchsummary").textContent = `Uploading ${wanted.length} image(s)…`;
   try {
     const res = await apiForm("/api/batch_upload", fd);
-    $("#batchin").value = res.dir;
-    $("#batchsummary").textContent =
-      `${res.count} image(s) staged — press ▶ Process folder.` +
-      (res.skipped.length ? ` ${res.skipped.length} unsupported file(s) skipped.` : "");
-    renderBatchTable([]);
-    toast(`${res.count} image(s) ready for batch.`, "ok");
+    if (target === "gcp") {
+      $("#gcpbatchdir").value = res.dir;
+      toast(`${res.count} image(s) staged — loading queue…`, "ok");
+      await gcpBatchLoadFolder();
+    } else {
+      $("#batchin").value = res.dir;
+      $("#gcpbatchlink").hidden = true;  // stale link from a previous run
+      $("#batchsummary").textContent =
+        `${res.count} image(s) staged — press ▶ Process folder.` +
+        (res.skipped.length ? ` ${res.skipped.length} unsupported file(s) skipped.` : "");
+      renderBatchTable([]);
+      toast(`${res.count} image(s) ready for batch.`, "ok");
+    }
   } catch (err) {
-    $("#batchsummary").textContent = "";
-    toast(`Batch staging failed: ${err.message}`, "error", 8000);
+    if (target === "batch") $("#batchsummary").textContent = "";
+    toast(`Staging failed: ${err.message}`, "error", 8000);
   } finally {
     setBusy(false);
   }
@@ -1752,7 +2253,18 @@ async function stageBatchDrop(dt) {
   panel.addEventListener("drop", (e) => {
     e.preventDefault(); e.stopPropagation(); // keep the single-image handler out of it
     zone.classList.remove("drag");
-    stageBatchDrop(e.dataTransfer);
+    stageDrop(e.dataTransfer, "batch");
+  });
+}
+
+{
+  const zone = $("#gcpbatchdrop");
+  zone.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); zone.classList.add("drag"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("drag"));
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    zone.classList.remove("drag");
+    stageDrop(e.dataTransfer, "gcp");
   });
 }
 
@@ -1789,13 +2301,18 @@ async function openBatchItem(row) {
   try {
     const sum = await apiPost("/api/batch_open",
                               { path: row.path, out_dir: row.out_dir, ...ppSettings() });
+    // Switch back to the editor BEFORE loadPhoto() — it calls fitView(),
+    // which measures the canvas element's rendered size; while the batch
+    // panel is showing, #canvaswrap is display:none and fitView() computes
+    // a 0% zoom against that zero-size box (blank canvas until a manual
+    // Fit/F — looked like the click did nothing).
+    if (batchPanelOpen()) $("#batchtoggle").click();
     applySummary(sum);
     await loadPhoto();
     if (sum.has_result) await loadMaskAndSkeleton();
     updateStats();
     // Re-exports should replace this item's batch artifacts in place.
     if (sum.mask_loaded) $("#outdir").value = row.out_dir;
-    if (batchPanelOpen()) $("#batchtoggle").click(); // back to the editor
     if (sum.mask_loaded) {
       toast(`${row.file} loaded with its batch result — edit away.`, "ok");
     } else {

@@ -117,17 +117,17 @@ except ValueError:
     pass
 print("auto-assign guard rails OK")
 
-# --- REAL user case (2026-07-08): 4-corner near-rectangle GR30 ------------ #
+# --- 4-corner near-rectangle (synthetic coordinates) ---------------------- #
 # A rectangle is affine-symmetric: cycled pairings fit with the SAME rms,
 # only by squashing the photo by aspect² (the reported "stretched" QGIS
 # look). The least-distortion + click-order tie-break must pick the truth.
-GR30 = [(576362.2191, 5016382.8409), (576363.1558, 5016383.1340),
-        (576363.0224, 5016383.5597), (576362.0796, 5016383.2474)]
-GR30_5 = GR30 + [(576362.3657, 5016383.0922)]
+RECT4 = [(500000.2191, 4800000.8409), (500001.1558, 4800001.1340),
+         (500001.0224, 4800001.5597), (500000.0796, 4800001.2474)]
+RECT4_5 = RECT4 + [(500000.3657, 4800001.0922)]
 # Simulated photo: 1000 px/m, rotated 30 deg, y down (det<0), tiny noise.
 _ang = np.radians(30)
 _rot = np.array([[np.cos(_ang), -np.sin(_ang)], [np.sin(_ang), np.cos(_ang)]])
-_org = np.array([576362.0, 5016382.5])
+_org = np.array([500000.0, 4800000.5])
 _rng3 = np.random.default_rng(11)
 
 
@@ -140,8 +140,8 @@ def _to_px(pts):
     return out
 
 
-clicks4 = _to_px(GR30)                      # clicked in file order 1-4
-for pool in (GR30, GR30_5):                 # without and with the extra 5th
+clicks4 = _to_px(RECT4)                      # clicked in file order 1-4
+for pool in (RECT4, RECT4_5):                # without and with the extra 5th
     a4, rms4, mir4, sec4 = auto_assign_gcps(clicks4, pool)
     assert a4 == [0, 1, 2, 3], f"wrong pairing chosen: {a4} (pool={len(pool)})"
     assert not mir4
@@ -154,7 +154,7 @@ print("symmetric-rectangle tie-break OK (correct pairing, no squash)")
 # clicks in a DIFFERENT order than the file still resolve correctly
 perm = [2, 0, 3, 1]
 clicks_shuffled = [clicks4[i] for i in perm]
-a5, _r5, _m5, _s5 = auto_assign_gcps(clicks_shuffled, GR30_5)
+a5, _r5, _m5, _s5 = auto_assign_gcps(clicks_shuffled, RECT4_5)
 assert a5 == perm, a5
 print("shuffled-click rectangle OK")
 

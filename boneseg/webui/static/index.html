@@ -68,7 +68,7 @@
       </div>
       <label class="check"><input id="mastercb" type="checkbox"> Append to site master file</label>
       <label class="lbl" for="sitename">Site name <span class="hint">(printed on plates)</span></label>
-      <input id="sitename" type="text" spellcheck="false" placeholder="e.g. Balaban — grobovi">
+      <input id="sitename" type="text" spellcheck="false" placeholder="e.g. site name">
       <label class="lbl" for="outdir">Output directory</label>
       <input id="outdir" type="text" spellcheck="false">
       <button id="exportbtn" class="btn block" type="button">💾 Export</button>
@@ -103,6 +103,7 @@
         <button data-tool="node" class="tbtn" title="Nodes (N) — drag a point to move it; double-click a line to insert a point; click a line then Del removes it; drag a rectangle over points to select many, then Del">◈ Nodes</button>
         <button data-tool="select" class="tbtn" title="Select component (S) — click a blob (or a centerline in Skeleton/Clean view), then Delete">⬚ Select</button>
         <button data-tool="gcp" class="tbtn" title="Georeference (G) — click 3+ points on the photo, enter their surveyed E/N, Apply">🌍 GCP</button>
+        <button data-tool="sam" class="tbtn" title="SAM prompt (M) — click=include, Shift+click=exclude, drag=box. Any feature, not just bones.">🪄 Sam</button>
       </div>
       <div class="group" id="sizegroup" hidden>
         <label class="lbl-inline">Size</label>
@@ -131,6 +132,18 @@
           the points, then click them on the photo — <b>in any order</b>.
           Extra points in the file are fine. Or skip the file and type each
           click's E/N by hand.</p>
+        <div id="gcpbatchdrop" class="dropzone gcp">📥 <b>Drop a folder or images</b> to
+          georeference, or type a path below</div>
+        <div class="btnrow" id="gcpbatchrow">
+          <input id="gcpbatchdir" type="text" placeholder="Folder with grave photos to georeference" spellcheck="false">
+          <button id="gcpbatchload" class="btn sm" type="button">📂 Load folder</button>
+        </div>
+        <div id="gcpbatchqueue" class="hint"></div>
+        <div class="btnrow" id="gcpbatchnav" hidden>
+          <button id="gcpbatchprev" class="btn sm" type="button">‹ Prev</button>
+          <button id="gcpbatchskip" class="btn sm" type="button">Skip ›</button>
+          <span class="hint">Apply georeference below advances to the next photo automatically.</span>
+        </div>
         <div id="gcpdrop" class="dropzone gcp">📄 <b>Drop point file</b> or
           <a href="#" id="gcpbrowse">browse…</a></div>
         <input id="gcpfile" type="file" accept=".txt,.csv,.tsv,.dat,.asc,.xlsx,.xlsm" hidden>
@@ -141,6 +154,11 @@
           <button id="gcpreset" class="btn sm" type="button">Reset</button>
         </div>
         <div id="gcpqueue" class="hint"></div>
+        <div class="btnrow" id="gcpcodefilterrow" hidden>
+          <label class="lbl-inline" for="gcpcodefilter">Grave code</label>
+          <input id="gcpcodefilter" type="text" list="gcpcodelist" placeholder="e.g. GR085 — narrows the pool to this grave" spellcheck="false">
+          <datalist id="gcpcodelist"></datalist>
+        </div>
         <div id="gcptablewrap"></div>
         <label class="check" title="Match clicks to the loaded points by geometry — click order and point order become irrelevant"><input id="gcpauto" type="checkbox" checked> auto-match points (order-free)</label>
         <div class="btnrow" id="gcpcrsrow">
@@ -158,8 +176,24 @@
           </datalist>
           <label class="check"><input id="gcpswap" type="checkbox"> swap E/N</label>
         </div>
+        <div id="gcpcrsguess" class="hint"></div>
         <button id="gcpapply" class="btn primary block" type="button">✓ Apply georeference</button>
         <div id="gcpstatus" class="hint"></div>
+      </div>
+      <div id="sampanel" hidden>
+        <h4>🪄 SAM prompt</h4>
+        <p class="hint">Segment any feature — not just bones (walls, stones, cut
+          lines...). <b>Click</b> = include, <b>Shift+click</b> = exclude,
+          <b>drag</b> = box. Combine as many as you need, then Accept — the
+          region joins the mask exactly like a brush stroke, so it goes
+          through the normal Apply edits / exports.</p>
+        <button id="samblank" class="btn sm" type="button">▭ Start blank canvas
+          <span class="hint">(skip bone inference)</span></button>
+        <div id="samstatus" class="hint"></div>
+        <div class="btnrow">
+          <button id="samaccept" class="btn primary sm" type="button" disabled>✓ Accept (Enter)</button>
+          <button id="samclear" class="btn sm" type="button" disabled>✕ Clear (Esc)</button>
+        </div>
       </div>
       <div id="emptystate">
         <div class="big">🦴</div>
@@ -183,6 +217,7 @@
       <label class="check"><input id="batchmaster" type="checkbox" checked> Build combined master file (GPKG + DXF + GeoJSON)</label>
       <button id="batchrun" class="btn primary" type="button">▶ Process folder</button>
       <div id="batchsummary" class="hint"></div>
+      <button id="gcpbatchlink" class="btn sm" type="button" hidden>🌍 Georeference this batch</button>
       <div id="batchtablewrap"></div>
     </div>
 

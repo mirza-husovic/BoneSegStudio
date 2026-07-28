@@ -11,6 +11,7 @@ outputs/
 
 # Models (large binaries live outside the repo)
 *.pth
+*.pt
 
 # OS / editor
 .DS_Store

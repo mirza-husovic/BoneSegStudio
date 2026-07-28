@@ -10,6 +10,11 @@ tune the postprocessing live, and export vectors for your drawing workflow.
 
 Everything runs locally on Windows. **No cloud, no external APIs, no Docker.**
 
+![BoneSeg Studio — from excavation photo to vector drawing](docs/demo.png)
+
+*A grave photograph the model had **never seen** → U-Net bone detection →
+automatic vector line drawing, ready for CAD/GIS. Unretouched output.*
+
 ---
 
 ## Highlights
@@ -238,13 +243,12 @@ degrades to CPU rather than crashing.
 
 ---
 
-## Screenshots
+## Example output
 
-*(placeholders — drop your own PNGs here once you've run the app)*
+![Detected bones overlaid on the photograph](docs/example_overlay.png)
 
-| Overlay | Skeleton | Batch |
-|--------|----------|-------|
-| `docs/screenshot_overlay.png` | `docs/screenshot_skeleton.png` | `docs/screenshot_batch.png` |
+The U-Net mask (cyan) and the extracted centerlines (red) drawn back over the
+input photograph. The same geometry is what gets written to GeoJSON / DXF / SVG.
 
 ---
 
@@ -280,7 +284,14 @@ The architecture was designed so these slot in with minimal refactoring:
 
 ---
 
-## License & attribution
+## About
 
-Internal research tool for the Balaban Grobovi / bone-segmentation project.
-Built around the `model330B3` UNet trained on `UNET_DATASET_FINAL3` (330 pairs).
+Research tool developed as part of a personal project on automatic
+vectorization of archaeological finds. It is built around a U-Net
+(EfficientNet-B3 encoder, `model367b3`) trained on a curated dataset of
+excavation photo / bone-outline pairs.
+
+The trained weights and all archaeological source data (photographs, drawings,
+survey coordinates) are **not** included in this repository — the code is the
+shared artifact. The demo images above use a photograph the model was never
+trained on.

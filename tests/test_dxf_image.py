@@ -17,7 +17,7 @@ from boneseg.data.readers import GeoRef
 from boneseg.data.writers import save_dxf
 
 W, H = 400, 300
-T = Affine.translation(576362.0, 5016383.0) * Affine.rotation(-25) * Affine.scale(0.002, -0.002)
+T = Affine.translation(500000.0, 4800000.0) * Affine.rotation(-25) * Affine.scale(0.002, -0.002)
 GEOREF = GeoRef(T, rasterio.crs.CRS.from_epsg(3765))
 
 rings = [[T * p for p in [(10, 10), (100, 10), (100, 80), (10, 80)]]]

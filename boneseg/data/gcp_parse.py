@@ -13,8 +13,12 @@ AutoCAD shows). Realities this parser absorbs:
   X=northing, which the in-app auto-match corrects anyway if wrong),
 * comment lines (#, //) and blank lines.
 
-Every function returns points as ``[{"id": str, "e": float, "n": float}]``
-— Z is parsed but dropped (the affine georeferencing is 2-D).
+Every function returns points as
+``[{"id": str, "e": float, "n": float, "code": str}]`` — Z is parsed but
+dropped (the affine georeferencing is 2-D); ``code`` is the trailing
+point-code/description column ("GR085", "FIX1", ...) when present, else
+"" — batch georeferencing filters a multi-grave master file down to one
+grave's points by this field.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ _ID_NAMES = {"id", "pt", "point", "name", "label", "broj", "tocka", "točka", "b
 _E_NAMES = {"e", "east", "easting", "y"}   # geodetic: Y = easting
 _N_NAMES = {"n", "north", "northing", "x"}  # geodetic: X = northing
 _Z_NAMES = {"z", "h", "elev", "elevation", "height", "visina", "kota"}
+_CODE_NAMES = {"code", "kod", "grave", "grob", "desc", "description", "opis"}
 
 _DEC_COMMA = re.compile(r"^-?\d+,\d+$")
 
@@ -81,9 +86,9 @@ def _classify(tokens: list[str]) -> dict | None:
         rid, rest_toks, rest_nums = None, tokens, nums
 
     # Take the leading run of numeric tokens; anything after the first
-    # non-numeric one is a point code / description and is ignored —
-    # total-station exports commonly end rows with a code column
-    # ("1,576362.2191,5016382.8409,229.3286,GR30").
+    # non-numeric one is a point code / description column — total-station
+    # exports commonly end rows with one ("1,500000.2191,4800000.8409,
+    # 229.3286,P1") and it groups points by code for batch georef.
     prefix: list[float] = []
     for v in rest_nums:
         if v is None:
@@ -91,16 +96,17 @@ def _classify(tokens: list[str]) -> dict | None:
         prefix.append(v)
     if len(prefix) < 2:
         return None
+    code = " ".join(t.strip().strip('"') for t in rest_toks[len(prefix):]).strip()
 
     if rid is not None:
-        return {"id": rid, "e": prefix[0], "n": prefix[1]}
+        return {"id": rid, "e": prefix[0], "n": prefix[1], "code": code}
     if len(prefix) == 2:
-        return {"id": "", "e": prefix[0], "n": prefix[1]}
+        return {"id": "", "e": prefix[0], "n": prefix[1], "code": code}
     # 3+ leading numbers: "ID E N [Z]" when the first token plausibly IS
     # an id (short integer), else "E N Z ..." without one.
     if _looks_like_id(rest_toks[0]):
-        return {"id": rest_toks[0], "e": prefix[1], "n": prefix[2]}
-    return {"id": "", "e": prefix[0], "n": prefix[1]}
+        return {"id": rest_toks[0], "e": prefix[1], "n": prefix[2], "code": code}
+    return {"id": "", "e": prefix[0], "n": prefix[1], "code": code}
 
 
 def _split_line(line: str) -> list[str]:
@@ -150,6 +156,8 @@ def _header_columns(row: list) -> dict[str, int] | None:
             cols["id"] = i
         elif name in _Z_NAMES and "z" not in cols:
             cols["z"] = i
+        elif name in _CODE_NAMES and "code" not in cols:
+            cols["code"] = i
     return cols if "e" in cols and "n" in cols else None
 
 
@@ -191,8 +199,10 @@ def parse_gcp_xlsx(data: bytes) -> list[dict]:
             if e is None or n is None:
                 continue
             rid = cell("id")
+            code = cell("code")
             pts.append({"id": "" if rid is None else str(rid).strip(),
-                        "e": e, "n": n})
+                        "e": e, "n": n,
+                        "code": "" if code is None else str(code).strip()})
         else:
             tokens = [str(c) for c in row if c is not None and str(c).strip()]
             p = _classify(tokens)

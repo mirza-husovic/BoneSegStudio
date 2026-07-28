@@ -10,6 +10,7 @@ so that this application reproduces the validated inference pipeline exactly:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,9 +19,26 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 
+# Trained weights live OUTSIDE the repo (they are large binaries). Point the
+# app at them with the BONESEG_MODEL_PATH environment variable, or drop the
+# checkpoint at the default location below.
 DEFAULT_MODEL_PATH: Path = Path(
-    r"C:\Users\mirza\Desktop\modeli\model367b3\best_bone_model.pth"
+    os.environ.get(
+        "BONESEG_MODEL_PATH",
+        str(PROJECT_ROOT / "models" / "model367b3" / "best_bone_model.pth"),
+    )
 )
+
+# Promptable segmentation (walls, stones, any feature the bone-UNet was
+# never trained for) — separate from the bone model, loaded lazily on
+# first use so a missing checkpoint doesn't block the rest of the app.
+SAM2_CHECKPOINT_PATH: Path = Path(
+    os.environ.get(
+        "BONESEG_SAM2_PATH",
+        str(PROJECT_ROOT / "models" / "sam2" / "sam2.1_hiera_base_plus.pt"),
+    )
+)
+SAM2_CONFIG_NAME: str = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 
 LOGS_DIR: Path = PROJECT_ROOT / "logs"
 OUTPUTS_DIR: Path = PROJECT_ROOT / "outputs"

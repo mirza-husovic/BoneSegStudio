@@ -38,7 +38,7 @@ automatic vector line drawing, ready for CAD/GIS. Unretouched output.*
 - **Georeferencing preserved** end-to-end: GeoTIFF inputs keep their CRS in the
   mask raster and GeoJSON outputs.
 - Rotating **file logging**, graceful **error handling**, and a modular
-  architecture designed to grow (DXF, YOLO, SAM2, Stratum-AIM, 3D).
+  architecture designed to grow (DXF, YOLO, SAM2, 3D).
 
 ---
 
@@ -54,7 +54,7 @@ automatic vector line drawing, ready for CAD/GIS. Unretouched output.*
 ### 2. Create a virtual environment
 
 ```powershell
-cd C:\Users\mirza\BoneSegStudio
+cd BoneSegStudio
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -197,8 +197,10 @@ applied to the full-resolution mask as a sparse diff.
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters
   (`model367b3`, trained on UNET_DATASET_FINAL4, 367 pairs).
-- **Weights:** `C:\Users\mirza\Desktop\modeli\model367b3\best_bone_model.pth`
-  (configurable in `boneseg/config.py`).
+- **Weights:** not included in this repository (large binary + tied to
+  unpublished training data). Point the app at a local checkpoint via the
+  `BONESEG_MODEL_PATH` environment variable, or the default
+  `models/model367b3/best_bone_model.pth` (see `boneseg/config.py`).
 - **Inference:** reflect-padded sliding window (patch 512, stride 256),
   sigmoid probabilities averaged over overlaps; optional 4-way flip TTA.
 - **Postprocessing:** threshold (default 0.5) → remove small components →
@@ -245,10 +247,10 @@ degrades to CPU rather than crashing.
 
 ## Example output
 
-![Detected bones overlaid on the photograph](docs/example_overlay.png)
+![Extracted bone centerlines drawn over the photograph](docs/example_overlay.png)
 
-The U-Net mask (cyan) and the extracted centerlines (red) drawn back over the
-input photograph. The same geometry is what gets written to GeoJSON / DXF / SVG.
+The extracted centerlines (red) drawn back over the input photograph — this is
+the vector geometry that gets written to GeoJSON / DXF / SVG.
 
 ---
 
@@ -277,8 +279,6 @@ The architecture was designed so these slot in with minimal refactoring:
   `boneseg/models/registry.py`; the UI dropdown updates automatically.
 - **YOLO / SAM2** — new model *families* register their own builder function;
   the pipeline stays model-agnostic.
-- **Stratum-AIM integration** — the headless pipeline can be driven directly to
-  feed vectors into the Site Continuum / IFS layers.
 - **3D visualization** and **automatic archaeological reporting** — consume the
   same `PipelineResult` objects.
 

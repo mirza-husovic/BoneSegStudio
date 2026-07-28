@@ -10,10 +10,27 @@ tune the postprocessing live, and export vectors for your drawing workflow.
 
 Everything runs locally on Windows. **No cloud, no external APIs, no Docker.**
 
-![BoneSeg Studio — from excavation photo to vector drawing](docs/demo.png)
+![BoneSeg Studio workflow — photograph to CAD-ready vector, animated](docs/workflow.gif)
 
-*A grave photograph the model had **never seen** → U-Net bone detection →
-automatic vector line drawing, ready for CAD/GIS. Unretouched output.*
+*A grave photograph the model had **never seen**, end to end: photograph →
+U-Net detection → vectorized bone outlines → CAD/GIS-ready line drawing.
+Unretouched output at default settings.*
+
+---
+
+## The application
+
+![BoneSeg Studio interface — original photo, skeleton, and clean vector views](docs/app_demo.gif)
+
+*The actual interface (not a mock-up): load a grave photo, run one-click
+inference, then flip between the original photo, the red skeleton over the
+photo, and the clean CAD-ready line drawing. Real output on a held-out grave
+at default settings — captured live from the running app.*
+
+<p align="center">
+  <img src="docs/app_ui_skeleton.png" width="88%"
+       alt="BoneSeg Studio — skeleton view over the excavation photograph">
+</p>
 
 ---
 
@@ -196,6 +213,24 @@ applied to the full-resolution mask as a sparse diff.
 
 ## Model & pipeline
 
+```mermaid
+flowchart TD
+    A["Grave photo / orthophoto<br/>JPG · PNG · TIFF · GeoTIFF"] --> B["UNet · EfficientNet-B3<br/>sliding window 512 / stride 256"]
+    B --> C["Probability map"]
+    C --> D["Threshold 0.5<br/>+ remove small components"]
+    D --> E["Binary mask"]
+    E -. "optional paint<br/>corrections (undo/redo)" .-> E
+    E --> F["Medial-axis skeleton<br/>+ branch pruning"]
+    E --> G["Boundary vectorization"]
+    F --> H["Centerline polylines<br/>(spline-smoothed)"]
+    G --> I["Outline polygons"]
+    E --> J["Export"]
+    H --> J
+    I --> J
+    J --> K["GeoJSON · DXF · SVG<br/>mask / overlay / skeleton PNG · plate PDF"]
+    K --> L["CAD / GIS<br/>AutoCAD · QGIS"]
+```
+
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters
   (`model367b3`, trained on 367 annotated grave photographs).
 - **Weights:** not included in this repository (large binary + tied to
@@ -247,6 +282,11 @@ degrades to CPU rather than crashing.
 ---
 
 ## Example output
+
+![Three-panel figure: excavation photograph, U-Net mask, automatic vector output](docs/demo.png)
+
+*The three stages side by side (still frame): excavation photograph → U-Net
+bone detection → automatic vector line drawing.*
 
 ![Detected bone outlines drawn over the photograph](docs/example_overlay.png)
 
@@ -301,3 +341,12 @@ The trained weights and all archaeological source data (photographs, drawings,
 survey coordinates) are **not** included in this repository — the code is the
 shared artifact. The demo images above use a photograph the model was never
 trained on.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE) — free to use, modify and distribute
+with attribution. The license covers the **code only**; the trained weights and
+archaeological source data are not part of this repository and are not licensed
+here.

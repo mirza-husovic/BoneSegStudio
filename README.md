@@ -247,10 +247,14 @@ degrades to CPU rather than crashing.
 
 ## Example output
 
-![Extracted bone centerlines drawn over the photograph](docs/example_overlay.png)
+![Detected bone outlines drawn over the photograph](docs/example_overlay.png)
 
-The extracted centerlines (red) drawn back over the input photograph — this is
-the vector geometry that gets written to GeoJSON / DXF / SVG.
+The detected bone outlines (red) drawn back over the input photograph — skull,
+ribs, vertebrae and long bones are each segmented, then written to GeoJSON /
+DXF / SVG. Both figures are raw model output at default settings (threshold
+0.5, min object 32 px) — no manual cleanup.
+
+![A second grave — the same pipeline on a different burial](docs/example_gr79.png)
 
 ---
 

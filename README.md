@@ -38,7 +38,8 @@ automatic vector line drawing, ready for CAD/GIS. Unretouched output.*
 - **Georeferencing preserved** end-to-end: GeoTIFF inputs keep their CRS in the
   mask raster and GeoJSON outputs.
 - Rotating **file logging**, graceful **error handling**, and a modular
-  architecture designed to grow (DXF, YOLO, SAM2, 3D).
+  architecture that keeps inference, post-processing and export cleanly
+  separated.
 
 ---
 
@@ -126,9 +127,9 @@ Useful flags:
 7. **Save to training set** — writes `images/<stem>.png`,
    `masks/<stem>.png`, `overlays/<stem>.png` and updates
    `dataset_manifest.csv` in a staging folder
-   (default `Desktop\UNET_STAGING`, same layout as `UNET_DATASET_FINAL4`),
-   so corrected pairs can later be merged into the real dataset by a plain
-   folder copy. The saved mask includes all your applied edits.
+   (default `~/Desktop/UNET_STAGING`), so corrected pairs can later be merged
+   into your training dataset by a plain folder copy. The saved mask includes
+   all your applied edits.
 8. **Batch** (toolbar) — paste an input folder and an output folder, click
    **Process folder**.
 
@@ -196,7 +197,7 @@ applied to the full-resolution mask as a sparse diff.
 ## Model & pipeline
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters
-  (`model367b3`, trained on UNET_DATASET_FINAL4, 367 pairs).
+  (`model367b3`, trained on 367 annotated grave photographs).
 - **Weights:** not included in this repository (large binary + tied to
   unpublished training data). Point the app at a local checkpoint via the
   `BONESEG_MODEL_PATH` environment variable, or the default
@@ -275,16 +276,17 @@ DXF / SVG. Both figures are raw model output at default settings (threshold
 
 ## Future roadmap
 
-The architecture was designed so these slot in with minimal refactoring:
+The architecture was designed so this slots in with minimal refactoring:
 
-- **DXF export** — geometry (`rings_out`, `polylines_out`) is already in the
-  right coordinate space; add a writer next to GeoJSON in `pipeline.export()`.
-- **Multiple / alternative models** — add a `ModelSpec` + builder in
-  `boneseg/models/registry.py`; the UI dropdown updates automatically.
-- **YOLO / SAM2** — new model *families* register their own builder function;
-  the pipeline stays model-agnostic.
-- **3D visualization** and **automatic archaeological reporting** — consume the
-  same `PipelineResult` objects.
+- **Alternative / additional models** — add a `ModelSpec` + builder in
+  `boneseg/models/registry.py` and the UI dropdown updates automatically. New
+  model families register their own builder without touching the rest of the
+  pipeline, which stays model-agnostic.
+- **Configurable catalogue plates** — the current A4 plate is a fixed
+  drawing-only layout (scale bar, north arrow, title block) and batch mode
+  already stacks them into one `catalog.pdf`. Configurable templates —
+  photo-and-drawing side by side, custom title-block fields, alternate paper
+  sizes — build on the existing `render_plate_figure` / `PipelineResult`.
 
 ---
 

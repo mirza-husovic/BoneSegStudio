@@ -467,12 +467,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         full-resolution pixels via ``edit_scale``; the skeleton raster is
         redrawn to match.
 
-        The raster mask is ALSO rebuilt from these polylines (same canonical
-        stroke profile as ``/api/save_training`` — 1 px centerlines dilated
-        with a 5x5 ellipse), so the Mask tab, mask/DXF/plate exports and the
-        component/pixel stats all reflect hand-drawn lines instead of the
-        stale model/brush mask. These overrides live until the next inference
-        / postprocess / mask-apply rebuilds from scratch.
+        The raster mask is updated SURGICALLY so the real segmentation
+        survives: every existing bone whose centerline is still present keeps
+        its exact filled shape (and therefore its outline, DXF/plate export and
+        pixel stats), while a bone whose centerline was deleted is dropped
+        whole. Brand-new hand-drawn lines that sit on no existing bone are
+        added as a dilated stroke. This replaces the old behaviour of flattening
+        the entire mask to dilated centerlines, which turned filled bones into
+        thin strokes on every "Apply edits" after a skeleton-view edit.
+        These overrides live until the next inference / postprocess rebuilds
+        from scratch.
         """
         _acquire()
         try:
@@ -485,11 +489,48 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 for line in lines_edit if len(line) >= 2
             ]
             r = state.result
+            prev_mask = (r.mask > 0).astype(np.uint8)
+            old_skel = _rasterize_polylines(r.polylines_px or [], prev_mask.shape)
+            new_skel = _rasterize_polylines(polylines_px, prev_mask.shape)
+
+            # Update the mask by DIFF, not by rebuild: only bones whose
+            # centerline was actually deleted are dropped; everything else keeps
+            # its exact filled shape (outline, DXF/plate export, pixel stats).
+            # A bone is dropped iff a removed centerline runs through it AND no
+            # remaining centerline does (so node nudges never drop a bone).
+            ell = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            n_lab, labels = cv2.connectedComponents(prev_mask)
+            new_mask = prev_mask.copy()
+            dropped = 0
+
+            def _labels_under(sk: np.ndarray) -> set:
+                if not sk.any():
+                    return set()
+                hit = np.unique(labels[cv2.dilate(sk, ell) > 0])
+                return set(hit.tolist()) - {0}
+
+            if n_lab > 1:
+                # A bone is dropped iff it HAD a centerline and now has none —
+                # i.e. its centerline was explicitly deleted. Bones that never
+                # had a centerline (tiny outline-only fragments) are untouched,
+                # and node/pen nudges that keep a centerline inside the bone keep
+                # the bone.
+                drop = _labels_under(old_skel) - _labels_under(new_skel)
+                if drop:
+                    new_mask[np.isin(labels, list(drop))] = 0
+                    dropped = len(drop)
+
+            # Brand-new hand-drawn lines on bare soil (line pen, not on any
+            # existing bone): add them as a dilated stroke so they still export.
+            added = new_skel & (cv2.dilate(old_skel, ell) == 0)
+            added[prev_mask > 0] = 0
+            if added.any():
+                new_mask = np.maximum(new_mask, cv2.dilate(added, ell))
+
             r.polylines_px = polylines_px
             r.polylines_out = polylines_px_to_output(polylines_px, r.georef)
-            r.skeleton = _rasterize_polylines(polylines_px, r.mask.shape)
-            r.mask = cv2.dilate(
-                r.skeleton, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+            r.skeleton = new_skel
+            r.mask = new_mask
             r.rings_out = mask_to_rings(r.mask, r.georef)
             r.n_components = count_components(r.mask)
             r.fg_pixels = int(r.mask.sum())
@@ -497,7 +538,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             state.mask_version += 1
             state.mask_basis = None
             state.mask_added = None
-            logger.info("Vectors replaced by hand: %d centerlines", len(polylines_px))
+            logger.info("Vectors set by hand: %d centerlines, %d bone(s) dropped",
+                        len(polylines_px), dropped)
             return state.result_summary()
         finally:
             state.lock.release()

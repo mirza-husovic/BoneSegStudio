@@ -10,10 +10,10 @@ tune the postprocessing live, and export vectors for your drawing workflow.
 
 Everything runs locally on Windows. **No cloud, no external APIs, no Docker.**
 
-![BoneSeg Studio workflow — photograph to CAD-ready vector, animated](docs/workflow.gif)
+![BoneSeg Studio — excavation photograph to vector bone drawing](docs/demo.png)
 
 *A grave photograph the model had **never seen**, end to end: photograph →
-U-Net detection → vectorized bone outlines → CAD/GIS-ready line drawing.
+U-Net bone detection → automatic vector line drawing.
 Unretouched output at default settings.*
 
 ---
@@ -23,7 +23,7 @@ Unretouched output at default settings.*
 ![BoneSeg Studio interface — original photo, skeleton, and clean vector views](docs/app_demo.gif)
 
 *The interface: load a grave photo, run one-click inference, then flip between
-the original photo, the red skeleton over the photo, and the clean CAD-ready
+the original photo, the red skeleton over the photo, and the clean vector
 line drawing.*
 
 **No manual editing** — every line above is raw `model367b3` output on a
@@ -217,20 +217,18 @@ applied to the full-resolution mask as a sparse diff.
 
 ```mermaid
 flowchart TD
-    A["Grave photo / orthophoto<br/>JPG · PNG · TIFF · GeoTIFF"] --> B["UNet · EfficientNet-B3<br/>sliding window 512 / stride 256"]
-    B --> C["Probability map"]
-    C --> D["Threshold 0.5<br/>+ remove small components"]
-    D --> E["Binary mask"]
-    E -. "optional paint<br/>corrections (undo/redo)" .-> E
-    E --> F["Medial-axis skeleton<br/>+ branch pruning"]
-    E --> G["Boundary vectorization"]
+    A["Grave photo / orthophoto<br/>JPG · PNG · TIFF · GeoTIFF"] --> B["UNet · EfficientNet-B3<br/>sliding-window inference"]
+    B --> C["Binary mask<br/>threshold + cleanup"]
+    EDIT["Manual correction<br/>paint · erase · undo/redo"] -.-> C
+    C --> F["Medial-axis skeleton<br/>+ branch pruning"]
+    C --> G["Boundary vectorization"]
     F --> H["Centerline polylines<br/>(spline-smoothed)"]
     G --> I["Outline polygons"]
-    E --> J["Export"]
+    C --> J["Export"]
     H --> J
     I --> J
     J --> K["GeoJSON · DXF · SVG<br/>mask / overlay / skeleton PNG · plate PDF"]
-    K --> L["CAD / GIS<br/>AutoCAD · QGIS"]
+    K --> L["CAD / GIS tools"]
 ```
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters

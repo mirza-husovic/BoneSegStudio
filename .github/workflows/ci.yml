@@ -1,0 +1,41 @@
+name: CI
+
+# Run on every push and pull request to the main branch.
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # opencv-python and rasterio load native libraries when imported.
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Weight-free unit tests only: GCP parsing, georeferencing math, DXF and
+      # catalog-plate export. The smoke test needs the private model checkpoint
+      # (never committed) so it is run locally, not here.
+      - name: Run unit tests
+        run: |
+          python tests/test_gcp_parse.py
+          python tests/test_georef_fit.py
+          python tests/test_plate.py
+          python tests/test_dxf_image.py

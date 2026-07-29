@@ -1,0 +1,29 @@
+# Keep the image small and, above all, keep the model private:
+# these never get copied into the Docker image.
+
+# --- model weights: provided at runtime via bind mount, NEVER baked in ---
+models/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# --- python caches / envs ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# --- runtime + local junk ---
+logs/
+outputs/
+uploads/
+docs/
+.git
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

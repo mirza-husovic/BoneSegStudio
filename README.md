@@ -1,5 +1,7 @@
 # 🦴 BoneSeg Studio
 
+[![CI](https://github.com/mirza-husovic/BoneSegStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mirza-husovic/BoneSegStudio/actions/workflows/ci.yml)
+
 A fully-offline desktop application for **archaeological bone
 segmentation, skeletonization and vectorization**. It wraps the trained
 `model367b3` UNet (EfficientNet-B3) in a fast local web interface
@@ -8,7 +10,9 @@ no build step): load an orthophoto or grave photo, run inference, inspect
 the mask / overlay / skeleton, paint corrections with full undo/redo,
 tune the postprocessing live, and export vectors for your drawing workflow.
 
-Everything runs locally on Windows. **No cloud, no external APIs, no Docker.**
+Everything runs locally on Windows with a single `python app.py` — **no cloud,
+no external APIs**. An optional `Dockerfile` is included for containerized
+deployment; the model weights stay outside the image and are mounted at runtime.
 
 ![BoneSeg Studio — excavation photograph to vector bone drawing](docs/demo.png)
 

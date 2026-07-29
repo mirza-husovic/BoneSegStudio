@@ -36,6 +36,17 @@ def find_free_port(host: str, start: int = 7860, tries: int = 50) -> int:
     raise RuntimeError(f"No free port in {start}..{start + tries - 1}")
 
 
+def browsable_host(host: str) -> str:
+    """Host name to show in a clickable URL.
+
+    ``0.0.0.0`` means "bind every interface" — correct for binding (and what a
+    container needs so a published port is reachable), but browsers reject it
+    with ERR_ADDRESS_INVALID. ``localhost`` reaches such a server, so use it
+    for display while the bind address stays untouched.
+    """
+    return "localhost" if host in ("0.0.0.0", "::", "[::]", "*") else host
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=f"{APP_NAME} launcher")
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: localhost)")
@@ -49,7 +60,7 @@ def main() -> None:
     setup_logging()
     ensure_runtime_dirs()
     port = args.port if args.port is not None else find_free_port(args.host)
-    url = f"http://{args.host}:{port}"
+    url = f"http://{browsable_host(args.host)}:{port}"
     logger.info("Starting %s v%s at %s", APP_NAME, __version__, url)
 
     app = create_app(AppConfig())

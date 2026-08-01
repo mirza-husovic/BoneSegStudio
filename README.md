@@ -5,8 +5,7 @@
 A fully-offline desktop application for **archaeological bone
 segmentation, skeletonization and vectorization**. It wraps the trained
 `model367b3` UNet (EfficientNet-B3) in a fast local web interface
-(FastAPI backend + hand-written Canvas 2D frontend — no Gradio, no WebGL,
-no build step): load an orthophoto or grave photo, run inference, inspect
+(FastAPI backend + hand-written Canvas 2D frontend): load an orthophoto or grave photo, run inference, inspect
 the mask / overlay / skeleton, paint corrections with full undo/redo,
 tune the postprocessing live, and export vectors for your drawing workflow.
 

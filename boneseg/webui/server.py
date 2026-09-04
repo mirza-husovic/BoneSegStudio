@@ -62,7 +62,13 @@ from boneseg.data.georef_fit import (
 from boneseg.logging_setup import get_logger
 from boneseg.models import MODEL_REGISTRY
 from boneseg.pipeline import BonePipeline, PipelineResult
-from boneseg.postprocessing import count_components, mask_to_rings, polylines_px_to_output
+from boneseg.postprocessing import (
+    carve_mask_by_centerlines,
+    count_components,
+    mask_to_rings,
+    polylines_px_to_output,
+    rasterize_polylines,
+)
 
 logger = get_logger(__name__)
 
@@ -108,6 +114,12 @@ class Studio:
         self.sam_engine = SamEngine(SAM2_CHECKPOINT_PATH, SAM2_CONFIG_NAME)
         self.sam_ready: bool = False
 
+        # Set once the user edits the centerlines by hand: from then on the
+        # polylines are authoritative and mask edits must NOT re-derive a
+        # skeleton from the mask (that resurrects every deleted line). Cleared
+        # only by a real rebuild — inference, "Apply settings", blank canvas.
+        self.vectors_locked: bool = False
+
         # Cumulative direct centerline edits, FULL resolution (bool).
         # Re-applied on every rebuild so pen strokes / skeleton erasures
         # survive further mask edits; reset by inference / postprocess.
@@ -151,6 +163,7 @@ class Studio:
         self.cl_add = None
         self.cl_remove = None
         self.mask_added = None
+        self.vectors_locked = False
         self.mask_version += 1
 
         h, w = img.shape[:2]
@@ -215,6 +228,7 @@ class Studio:
                 "fg_pixels": r.fg_pixels,
                 "fg_fraction": round(r.fg_fraction, 5),
                 "edited": r.stats.get("edited"),
+                "vectors_locked": self.vectors_locked,
             }
         return base
 
@@ -270,20 +284,8 @@ def _png_rgba(mask_bool: np.ndarray, rgb: tuple[int, int, int] = (255, 255, 255)
 
 def _rasterize_polylines(polylines_px: list, shape: tuple[int, int],
                          thickness: int = 1) -> np.ndarray:
-    """Draw full-res pixel polylines onto a {0,1} raster.
-
-    thickness=1 keeps ``result.skeleton`` (skeleton PNG export, mask-unchanged
-    apply path) consistent with hand-edited vectors; save_training dilates the
-    1 px raster to reproduce the UNET_DATASET_FINAL4 mask stroke profile.
-    """
-    h, w = shape
-    img = np.zeros((h, w), dtype=np.uint8)
-    for line in polylines_px:
-        if len(line) < 2:
-            continue
-        pts = np.array([[round(x), round(y)] for x, y in line], dtype=np.int32)
-        cv2.polylines(img, [pts], isClosed=False, color=1, thickness=thickness)
-    return img
+    """Draw full-res pixel polylines onto a {0,1} raster (shared helper)."""
+    return rasterize_polylines(polylines_px, shape, thickness=thickness)
 
 
 NO_CACHE = {"Cache-Control": "no-store"}
@@ -527,6 +529,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     new_mask[np.isin(labels, list(drop))] = 0
                     dropped = len(drop)
 
+            # Components that still hold OTHER centerlines survive the rule
+            # above, so a dense grave's merged blob kept every erased bone.
+            # Carve those by nearest line: mask closer to a deleted centerline
+            # than to any surviving one goes with it, neighbours stay whole.
+            removed = (old_skel > 0) & (cv2.dilate(new_skel, ell) == 0)
+            if removed.any():
+                carved = carve_mask_by_centerlines(
+                    new_mask, removed_skel=removed, kept_skel=(new_skel > 0))
+                carved_px = int(new_mask.sum() - carved.sum())
+                new_mask = carved
+            else:
+                carved_px = 0
+
             # Brand-new hand-drawn lines on bare soil (line pen, not on any
             # existing bone): add them as a dilated stroke so they still export.
             added = new_skel & (cv2.dilate(old_skel, ell) == 0)
@@ -545,8 +560,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             state.mask_version += 1
             state.mask_basis = None
             state.mask_added = None
-            logger.info("Vectors set by hand: %d centerlines, %d bone(s) dropped",
-                        len(polylines_px), dropped)
+            # From here on the hand-drawn polylines ARE the geometry: later
+            # mask edits must not re-derive (and thereby resurrect) them.
+            state.vectors_locked = True
+            logger.info("Vectors set by hand: %d centerlines, %d bone(s) dropped, "
+                        "%d px carved", len(polylines_px), dropped, carved_px)
             return state.result_summary()
         finally:
             state.lock.release()
@@ -593,6 +611,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     state.cl_add = None
                     state.cl_remove = None
                     state.mask_added = None
+                    state.vectors_locked = False
                     state.pp_applied = pp
                 state.job.update(status="done", progress=1.0, message="Done")
             except Cancelled:
@@ -624,6 +643,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             state.cl_add = None
             state.cl_remove = None
             state.mask_added = None
+            state.vectors_locked = False
             state.pp_applied = pp
             return state.result_summary()
         finally:
@@ -659,19 +679,20 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             rem = ~edited_bool & state.mask_basis
             mask_changed = bool(add.any() or rem.any())
             new_mask = state.result.mask.copy()
+            mask_add_full = mask_rem_full = None
             if add.any():
-                add_full = state.upscale_binary(add)
-                new_mask[add_full] = 1
+                mask_add_full = state.upscale_binary(add)
+                new_mask[mask_add_full] = 1
                 # Remember user-added regions so skeleton filters never touch
                 # them on this or any later rebuild.
                 if state.mask_added is None:
                     state.mask_added = np.zeros(new_mask.shape, dtype=bool)
-                state.mask_added |= add_full
+                state.mask_added |= mask_add_full
             if rem.any():
-                rem_full = state.upscale_binary(rem)
-                new_mask[rem_full] = 0
+                mask_rem_full = state.upscale_binary(rem)
+                new_mask[mask_rem_full] = 0
                 if state.mask_added is not None:
-                    state.mask_added &= ~rem_full
+                    state.mask_added &= ~mask_rem_full
 
             # Direct centerline edits (line pen / skeleton-view eraser):
             # the CLIENT diffs its rendered centerlines against what it drew
@@ -685,6 +706,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
             sk_add = _read_edit_mask(skel_add_data) if skel_add_data else None
             sk_rem = _read_edit_mask(skel_rem_data) if skel_rem_data else None
+            cl_add_new = cl_rem_new = None     # THIS request's strokes only
             if (sk_add is not None and sk_add.any()) or (sk_rem is not None and sk_rem.any()):
                 logger.info("centerline diff: add=%d px, remove=%d px",
                             int(sk_add.sum()) if sk_add is not None else 0,
@@ -699,16 +721,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                         sk_rem.astype(np.uint8),
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
                     ) > 0
-                add_full = state.upscale_binary(sk_add) if sk_add is not None else \
+                cl_add_new = state.upscale_binary(sk_add) if sk_add is not None else \
                     np.zeros((h, w), dtype=bool)
-                rem_full = state.upscale_binary(sk_rem) if sk_rem is not None else \
+                cl_rem_new = state.upscale_binary(sk_rem) if sk_rem is not None else \
                     np.zeros((h, w), dtype=bool)
                 if state.cl_add is None:
                     state.cl_add = np.zeros((h, w), dtype=bool)
                 if state.cl_remove is None:
                     state.cl_remove = np.zeros((h, w), dtype=bool)
-                state.cl_add = (state.cl_add | add_full) & ~rem_full
-                state.cl_remove = (state.cl_remove | rem_full) & ~add_full
+                state.cl_add = (state.cl_add | cl_add_new) & ~cl_rem_new
+                state.cl_remove = (state.cl_remove | cl_rem_new) & ~cl_add_new
 
             # Filters run ONCE (at inference / "Apply settings") — applies
             # reuse those exact values, whatever the sliders say now, and the
@@ -717,13 +739,23 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 threshold=0.5, min_component_px=0,
                 prune_branch_px=state.pp_applied.prune_branch_px,
                 min_skeleton_px=state.pp_applied.min_skeleton_px)
-            # Unchanged mask -> keep the exact skeleton the user edited
-            # (re-deriving would shift pixels and break their erasures).
-            base_skel = None if mask_changed else state.result.skeleton
-            state.result = state.pipeline.apply_manual_mask(
-                state.result, new_mask, pp,
-                cl_add=state.cl_add, cl_remove=state.cl_remove,
-                base_skeleton=base_skel, protect=state.mask_added)
+            if state.vectors_locked:
+                # The user has drawn the centerlines by hand: keep them
+                # verbatim and interpret only this edit's diff. Re-deriving a
+                # skeleton from the mask here is exactly what used to wipe the
+                # drawing and resurrect every line the user had deleted.
+                state.result = state.pipeline.apply_manual_mask_locked(
+                    state.result, new_mask, pp,
+                    mask_add=mask_add_full, mask_rem=mask_rem_full,
+                    cl_add=cl_add_new, cl_remove=cl_rem_new)
+            else:
+                # Unchanged mask -> keep the exact skeleton the user edited
+                # (re-deriving would shift pixels and break their erasures).
+                base_skel = None if mask_changed else state.result.skeleton
+                state.result = state.pipeline.apply_manual_mask(
+                    state.result, new_mask, pp,
+                    cl_add=state.cl_add, cl_remove=state.cl_remove,
+                    base_skeleton=base_skel, protect=state.mask_added)
             state.mask_version += 1
             state.mask_basis = None
             return state.result_summary()
@@ -752,6 +784,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             state.mask_added = None
             state.cl_add = None
             state.cl_remove = None
+            state.vectors_locked = False
             return state.result_summary()
         finally:
             state.lock.release()

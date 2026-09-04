@@ -56,6 +56,7 @@ from boneseg.postprocessing import (
     mask_to_rings,
     polylines_px_to_output,
     prune_graph,
+    rasterize_polylines,
     remove_component_at,
 )
 from boneseg.postprocessing.vectorize import Polyline, rings_to_geojson_dict
@@ -93,6 +94,16 @@ class PipelineResult:
     @property
     def fg_fraction(self) -> float:
         return self.fg_pixels / max(1, self.height * self.width)
+
+
+def _line_mostly_inside(line: Polyline, region: np.ndarray, frac: float = 0.5) -> bool:
+    """Whether at least ``frac`` of a polyline's points fall inside ``region``."""
+    if not region.any() or len(line) == 0:
+        return False
+    h, w = region.shape
+    xs = np.clip(np.round([p[0] for p in line]).astype(int), 0, w - 1)
+    ys = np.clip(np.round([p[1] for p in line]).astype(int), 0, h - 1)
+    return float(region[ys, xs].mean()) >= frac
 
 
 class BonePipeline:
@@ -205,6 +216,94 @@ class BonePipeline:
             protect=protect,
         )
         new_result.stats["edited"] = "paint"
+        return new_result
+
+    def apply_manual_mask_locked(
+        self,
+        result: PipelineResult,
+        edited_mask01: np.ndarray,
+        settings: PostprocessSettings,
+        mask_add: np.ndarray | None = None,
+        mask_rem: np.ndarray | None = None,
+        cl_add: np.ndarray | None = None,
+        cl_remove: np.ndarray | None = None,
+    ) -> PipelineResult:
+        """Apply a mask edit while KEEPING the hand-drawn centerlines verbatim.
+
+        Once the user has edited the centerlines by hand, those polylines —
+        not the mask — are the authoritative geometry. Re-deriving a medial
+        axis from the mask (what :meth:`apply_manual_mask` does) would throw
+        the whole drawing away and bring every deleted line straight back,
+        because the bone is still in the mask underneath. So here the existing
+        polylines are carried over untouched and only the DIFF is interpreted:
+
+          * ``mask_rem`` — erased mask: the lines that ran through it go too;
+          * ``mask_add`` — newly painted mask: skeletonized ON ITS OWN, so the
+            addition contributes its own line and nothing else moves;
+          * ``cl_add`` / ``cl_remove`` — direct centerline strokes, folded in
+            the same way.
+
+        No pruning runs here: everything in play was put there by hand.
+        """
+        t0 = time.time()
+        mask = (edited_mask01 > 0).astype(np.uint8)
+
+        removal = np.zeros(mask.shape, dtype=bool)
+        if mask_rem is not None and np.any(mask_rem):
+            removal |= np.asarray(mask_rem) > 0
+        if cl_remove is not None and np.any(cl_remove):
+            # The displayed splines sit a couple of px off the raster stroke,
+            # so widen an explicit erasure before testing lines against it.
+            from scipy import ndimage as ndi
+            removal |= ndi.binary_dilation(np.asarray(cl_remove) > 0, iterations=2)
+
+        kept = [line for line in (result.polylines_px or [])
+                if not _line_mostly_inside(line, removal)]
+        dropped = len(result.polylines_px or []) - len(kept)
+
+        added = 0
+        for region in (
+            (mask > 0) & (np.asarray(mask_add) > 0) if mask_add is not None else None,
+            np.asarray(cl_add) > 0 if cl_add is not None else None,
+        ):
+            if region is None or not region.any():
+                continue
+            graph = build_skeleton_graph(region.astype(np.uint8))
+            if graph is not None:
+                # Trim the medial axis' end spurs (a painted blob sprouts a
+                # few), but never drop a whole component: a hand-painted bone
+                # survives however small.
+                graph = prune_graph(graph, prune_branch_px=settings.prune_branch_px,
+                                    min_component_px=0)
+            fresh = graph_to_polylines_px(
+                graph,
+                downsample_k=settings.spline_downsample,
+                spline_smooth=settings.spline_smooth,
+                density=settings.spline_density,
+            )
+            kept.extend(fresh)
+            added += len(fresh)
+
+        skeleton = rasterize_polylines(kept, mask.shape)
+        logger.info("Locked apply: %d centerlines kept, %d dropped, %d added",
+                    len(kept) - added, dropped, added)
+
+        new_result = PipelineResult(
+            source_path=result.source_path,
+            image=result.image,
+            georef=result.georef,
+            prob=result.prob,
+            mask=mask,
+            skeleton=skeleton,
+            polylines_px=kept,
+            polylines_out=polylines_px_to_output(kept, result.georef),
+            rings_out=mask_to_rings(mask, result.georef),
+            n_components=count_components(mask),
+            fg_pixels=int(mask.sum()),
+            inference_seconds=result.inference_seconds,
+            postprocess_seconds=time.time() - t0,
+        )
+        new_result.stats["edited"] = "vector"
         return new_result
 
     def delete_component(

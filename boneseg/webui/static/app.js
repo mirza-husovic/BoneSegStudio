@@ -72,6 +72,9 @@ const S = {
   samScore: null,
   samBusy: false,
 
+  vectorsLocked: false,   // server holds hand-drawn centerlines (authoritative)
+  lockWarned: false,      // "mask edits keep your lines" toast shown once
+
   jobTimer: null,
   busy: false,
 };
@@ -521,6 +524,12 @@ function toolSize() {
 
 function strokeBegin(ix, iy) {
   const layer = activeLayer();
+  if (layer === "mask" && S.vectorsLocked && !S.lockWarned) {
+    S.lockWarned = true;
+    toast("Your hand-drawn centerlines are locked — mask edits no longer redraw " +
+          "them. Erased mask drops the lines on it; newly painted mask gets its " +
+          "own line. Only Run / Apply settings rebuilds everything.", "", 9000);
+  }
   // Snapshot the whole layer cheaply (canvas->canvas copy stays on GPU);
   // the undo entry extracts only the stroke's bounding rect at the end.
   S.backupCtx.clearRect(0, 0, S.backup.width, S.backup.height);
@@ -1558,6 +1567,9 @@ function applySummary(sum) {
   if (sum.image) S.image = sum.image;
   if (sum.edit) S.edit = sum.edit;
   S.result = sum.result || null;
+  const wasLocked = S.vectorsLocked;
+  S.vectorsLocked = !!(sum.result && sum.result.vectors_locked);
+  if (!S.vectorsLocked && wasLocked) S.lockWarned = false;
   updateStats();
   updateEditButtons();
 }
@@ -1583,9 +1595,18 @@ function updateStats() {
 /* ------------------------------------------------------------------ */
 /* Actions: open / infer / postprocess / apply edits                    */
 /* ------------------------------------------------------------------ */
-function confirmDiscardEdits() {
-  return !(S.dirty || S.vecDirty) ||
-    confirm("You have unapplied edits — they will be lost. Continue?");
+function confirmDiscardEdits(rebuild = false) {
+  if (S.dirty || S.vecDirty) {
+    if (!confirm("You have unapplied edits — they will be lost. Continue?")) return false;
+  }
+  // A rebuild (inference / Apply settings) starts from the probability map
+  // again, so hand-drawn centerlines that were already APPLIED go too — the
+  // one way left to lose that work, so it asks first.
+  if (rebuild && S.result && S.result.edited) {
+    return confirm("This rebuilds the mask and centerlines from scratch — your " +
+                   "hand edits (drawn/deleted centerlines) will be lost. Continue?");
+  }
+  return true;
 }
 
 async function openImage(fileOrPath) {
@@ -1645,7 +1666,7 @@ window.addEventListener("drop", (e) => {
 
 $("#runbtn").addEventListener("click", async () => {
   if (!S.image) { toast("Open an image first."); return; }
-  if (!confirmDiscardEdits()) return;
+  if (!confirmDiscardEdits(true)) return;
   try {
     await apiPost("/api/infer", {
       model_key: $("#modelsel").value,
@@ -1667,7 +1688,7 @@ $("#runbtn").addEventListener("click", async () => {
 
 $("#applysettings").addEventListener("click", async () => {
   if (!S.result) { toast("Run inference first."); return; }
-  if (!confirmDiscardEdits()) return;
+  if (!confirmDiscardEdits(true)) return;
   setBusy(true);
   try {
     const sum = await apiPost("/api/postprocess", ppSettings());

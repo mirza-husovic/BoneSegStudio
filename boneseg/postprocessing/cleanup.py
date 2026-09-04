@@ -117,3 +117,46 @@ def remove_component_at(mask01: np.ndarray, row: int, col: int) -> tuple[np.ndar
     new_mask = mask01.copy()
     new_mask[labels == lbl] = 0
     return new_mask, True
+
+
+def carve_mask_by_centerlines(
+    mask01: np.ndarray,
+    removed_skel: np.ndarray,
+    kept_skel: np.ndarray,
+    max_radius_px: float = 20.0,
+) -> np.ndarray:
+    """Erase the mask band that belonged to DELETED centerlines only.
+
+    Every foreground pixel is assigned to its NEAREST centerline (a Voronoi
+    partition of the blob by its own lines); a pixel closer to a deleted line
+    than to any surviving one — and within ``max_radius_px`` of it — is
+    dropped.
+
+    A dense grave predicts as ONE merged blob covering many bones, so the
+    whole-component rule alone can never remove anything there: deleting a
+    centerline left its mask behind, the mask view showed a bone the skeleton
+    view no longer had, and the next rebuild derived the deleted line straight
+    back out of it. Carving by nearest line removes exactly the erased bone's
+    band and leaves its neighbours — and their outlines, DXF and pixel stats —
+    untouched. The radius keeps far-away fragments (which may simply never have
+    had a centerline) out of it.
+
+    Returns a NEW array; the input is never mutated.
+    """
+    removed = np.asarray(removed_skel) > 0
+    if not removed.any():
+        return mask01
+    from scipy import ndimage as ndi  # deferred: keep import cost off the hot path
+
+    d_removed = ndi.distance_transform_edt(~removed)
+    kept = np.asarray(kept_skel) > 0
+    if kept.any():
+        d_kept = ndi.distance_transform_edt(~kept)
+    else:
+        # Nothing survives: every band within reach of a deleted line goes.
+        d_kept = np.full(mask01.shape, np.inf, dtype=np.float64)
+
+    drop = (mask01 > 0) & (d_removed < d_kept) & (d_removed <= float(max_radius_px))
+    out = mask01.copy()
+    out[drop] = 0
+    return out

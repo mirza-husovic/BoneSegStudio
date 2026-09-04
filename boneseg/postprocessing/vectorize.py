@@ -99,6 +99,33 @@ def graph_to_polylines_px(
     return polylines
 
 
+def rasterize_polylines(
+    polylines_px: list[Polyline], shape: tuple[int, int], thickness: int = 1
+) -> np.ndarray:
+    """Draw pixel polylines onto a {0, 1} raster of ``shape`` (h, w).
+
+    ``thickness=1`` keeps a hand-edited result's ``skeleton`` layer consistent
+    with the polylines it was drawn from (skeleton PNG export, the
+    mask-unchanged apply path); save_training dilates it to reproduce the
+    UNET_DATASET_FINAL4 stroke profile.
+    """
+    h, w = shape
+    img = np.zeros((h, w), dtype=np.uint8)
+    for line in polylines_px:
+        if len(line) < 2:
+            continue
+        pts = np.array([[round(x), round(y)] for x, y in line], dtype=np.int32)
+        if HAS_CV2:
+            cv2.polylines(img, [pts], isClosed=False, color=1, thickness=thickness)
+        else:  # pragma: no cover - opencv is a hard dependency in practice
+            from skimage.draw import line as sk_line
+            for (x0, y0), (x1, y1) in zip(pts[:-1], pts[1:]):
+                rr, cc = sk_line(int(y0), int(x0), int(y1), int(x1))
+                keep = (rr >= 0) & (rr < h) & (cc >= 0) & (cc < w)
+                img[rr[keep], cc[keep]] = 1
+    return img
+
+
 def polylines_px_to_output(
     polylines_px: list[Polyline],
     georef: GeoRef | None,

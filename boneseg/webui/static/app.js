@@ -19,7 +19,14 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 /* ------------------------------------------------------------------ */
 const S = {
   image: null,            // {name,width,height,megapixels,georef}
-  edit: { width: 0, height: 0, scale: 1 },
+  // The edit canvas is a WINDOW into the full-resolution image: (x, y) is its
+  // origin in real pixels and `scale` how much it was shrunk to fit the
+  // canvas cap. Whole image + scale < 1 = overview; a zoomed-in window comes
+  // back at scale 1, where the brush paints REAL pixels.
+  edit: { width: 0, height: 0, scale: 1, x: 0, y: 0, full_width: 0, full_height: 0 },
+  viewBusy: false,        // an /api/edit_view swap is in flight
+  viewTimer: null,        // debounce for the automatic swap
+  viewHinted: false,      // "apply your edits first" hint shown once
   result: null,           // stats from server
   maskVersion: -1,
 
@@ -423,7 +430,13 @@ function draw() {
     ctx.stroke();
   }
 
-  $("#zoomlabel").textContent = `${Math.round(k * 100)}%`;
+  const detail = detailRatio();
+  $("#zoomlabel").textContent =
+    `${Math.round(detail * 100)}%` + (S.edit.scale >= 1 ? " · 1:1 edit" : "");
+  $("#zoomlabel").title = S.edit.scale >= 1
+    ? "Editing at full resolution: one canvas pixel is one real pixel."
+    : `Overview: one canvas pixel covers ${(1 / S.edit.scale).toFixed(1)} real pixels — `
+      + "zoom in to edit at full resolution.";
 }
 
 function updateSkelTint() {
@@ -438,6 +451,13 @@ function updateSkelTint() {
   S.skelTint = c;
 }
 
+/* Fit the whole grave on screen — which also means leaving a full-res
+ * window, since that only covers a region. */
+function fitAll() {
+  if (S.image && S.edit.full_width < S.image.width) setEditView(null).then(fitView);
+  else fitView();
+}
+
 function fitView() {
   if (!S.photo) return;
   const { w, h } = canvasSize();
@@ -450,6 +470,21 @@ function fitView() {
 
 function toImage(px, py) {
   return { x: (px - S.view.tx) / S.view.k, y: (py - S.view.ty) / S.view.k };
+}
+
+/* Canvas coords <-> real (full-resolution) image pixels. */
+function toFull(x, y) {
+  return { x: x / S.edit.scale + S.edit.x, y: y / S.edit.scale + S.edit.y };
+}
+/* Screen pixels per REAL image pixel — 1 means you are seeing native detail. */
+function detailRatio() { return S.view.k * S.edit.scale; }
+
+/* The visible region in real image pixels. */
+function viewportFullRect() {
+  const { w, h } = canvasSize();
+  const p0 = toImage(0, 0), p1 = toImage(w, h);
+  const a = toFull(p0.x, p0.y), b = toFull(p1.x, p1.y);
+  return { x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y };
 }
 
 /* ------------------------------------------------------------------ */
@@ -539,8 +574,19 @@ function strokeBegin(ix, iy) {
   strokeSegment(ix, iy, ix, iy);
 }
 
+/* Canvas 2D antialiases every stroke, so a 1 px line drawn at an integer
+ * coordinate straddles two pixel rows at half coverage each — and both end up
+ * in the mask. Snapping odd widths to pixel CENTRES and even widths to pixel
+ * BOUNDARIES makes an N px brush cover exactly N pixels. */
+function snapPx(v, size) {
+  return size % 2 === 1 ? Math.floor(v) + 0.5 : Math.round(v);
+}
+
 function strokeSegment(x0, y0, x1, y1) {
   const st = S.stroke;
+  const size = st.size;
+  x0 = snapPx(x0, size); y0 = snapPx(y0, size);
+  x1 = snapPx(x1, size); y1 = snapPx(y1, size);
   const m = layerCtx(st.layer);
   const color = st.layer === "skel" ? SKEL_COLOR : "#ffffff";
   m.save();
@@ -1017,6 +1063,81 @@ function insertNodeAt(ix, iy) {
   requestDraw();
 }
 
+/* Cut a centerline in two at the point under the cursor (CAD "split").
+ * Both halves keep the split point, so nothing moves — but they are now
+ * separate features: delete one, drag one, or re-join them later. */
+function cutLineAt(ix, iy) {
+  const tol = Math.max(NODE_HIT_PX / S.view.k, 3 / S.view.k);
+  const seg = nearestSegment(ix, iy, tol);
+  if (!seg) { toast("Point at a centerline to cut it (X).", "", 3000); return; }
+  const line = S.vectors[seg.li];
+  snapshotVectors();
+  const cut = [seg.cx, seg.cy];
+  const a = line.slice(0, seg.vi + 1).concat([cut.slice()]);
+  const b = [cut.slice()].concat(line.slice(seg.vi + 1));
+  const parts = [a, b].filter((l) => l.length >= 2);
+  S.vectors.splice(seg.li, 1, ...parts);
+  rebuildVectorPaths();
+  S.nodeSel = null; S.nodeMulti = [];
+  markVecDirty();
+  requestDraw();
+  toast("Cut — the two halves are separate centerlines now.", "ok", 3000);
+}
+
+/* Join the endpoint under the cursor (or the selected one) to the nearest
+ * OTHER line's endpoint: the classic "close the gap between two fragments"
+ * the model leaves where a bone is faint. Lines are reversed as needed so
+ * the join is seamless. */
+const JOIN_PX = 60;              // screen-px search radius for the partner end
+function endpointsOf(li) {
+  const line = S.vectors[li];
+  return [{ li, vi: 0, p: line[0] }, { li, vi: line.length - 1, p: line[line.length - 1] }];
+}
+function joinNear(ix, iy) {
+  const V = S.vectors || [];
+  if (V.length < 2) return;
+  const tol = JOIN_PX / S.view.k;
+  // The end we start from: an explicitly selected endpoint, else the nearest.
+  let from = null;
+  const sel = S.nodeSel;
+  if (sel && sel.vi >= 0 && V[sel.li] &&
+      (sel.vi === 0 || sel.vi === V[sel.li].length - 1)) {
+    from = { li: sel.li, vi: sel.vi, p: V[sel.li][sel.vi] };
+  } else {
+    let best = null;
+    for (let li = 0; li < V.length; li++) {
+      for (const e of endpointsOf(li)) {
+        const d = Math.hypot(e.p[0] - ix, e.p[1] - iy);
+        if (d <= tol && (!best || d < best.d)) best = { ...e, d };
+      }
+    }
+    from = best;
+  }
+  if (!from) { toast("Point at the end of a centerline to join it (J).", "", 3500); return; }
+  let mate = null;
+  for (let li = 0; li < V.length; li++) {
+    if (li === from.li) continue;
+    for (const e of endpointsOf(li)) {
+      const d = Math.hypot(e.p[0] - from.p[0], e.p[1] - from.p[1]);
+      if (d <= tol && (!mate || d < mate.d)) mate = { ...e, d };
+    }
+  }
+  if (!mate) { toast(`No other centerline end within ${JOIN_PX} px to join to.`, "", 4000); return; }
+  snapshotVectors();
+  const a = V[from.li].slice(), b = V[mate.li].slice();
+  if (from.vi === 0) a.reverse();          // A must END at the join
+  if (mate.vi !== 0) b.reverse();          // B must START at it
+  const merged = a.concat(b.slice(1));     // drop B's duplicate first point
+  const hi = Math.max(from.li, mate.li), lo = Math.min(from.li, mate.li);
+  S.vectors.splice(hi, 1);
+  S.vectors.splice(lo, 1, merged);
+  rebuildVectorPaths();
+  S.nodeSel = null; S.nodeMulti = [];
+  markVecDirty();
+  requestDraw();
+  toast(`Joined — ${merged.length} points in one centerline.`, "ok", 3000);
+}
+
 function deleteNode() {
   const sel = S.nodeSel;
   if (!sel || !S.vectors[sel.li]) return;
@@ -1251,6 +1372,7 @@ canvas.addEventListener("pointermove", (e) => {
   if (S.pan) {
     S.view.tx += e.offsetX - S.pan.x;
     S.view.ty += e.offsetY - S.pan.y;
+    maybeSwitchEditView();
     S.pan = { x: e.offsetX, y: e.offsetY };
     requestDraw();
     return;
@@ -1309,10 +1431,11 @@ canvas.parentElement.addEventListener("wheel", (e) => {
   S.view.ty = cy - (cy - S.view.ty) * (k / S.view.k);
   S.view.k = k;
   requestDraw();
+  maybeSwitchEditView();
 }, { passive: false });
 
 canvas.addEventListener("dblclick", (e) => {
-  if (S.tool === "pan") { fitView(); return; }
+  if (S.tool === "pan") { fitAll(); return; }
   if (S.tool === "pen") { finishVecPen(true); return; }   // finish the line
   if (S.tool === "node") {
     const p = toImage(e.offsetX, e.offsetY);
@@ -1345,7 +1468,28 @@ window.addEventListener("keydown", (e) => {
     case "s": case "S": setTool("select"); break;
     case "g": case "G": setTool("gcp"); break;
     case "m": case "M": setTool("sam"); break;
-    case "f": case "F": fitView(); break;
+    case "f": case "F": fitAll(); break;
+    case "x": case "X": {
+      if (!S.vectors) break;
+      // Cut under the cursor, or at the selected vertex when the mouse has
+      // wandered off the canvas.
+      if (S.pointer.over) {
+        const p = toImage(S.pointer.x, S.pointer.y);
+        cutLineAt(p.x, p.y);
+      } else if (S.nodeSel && S.nodeSel.vi >= 0 && S.vectors[S.nodeSel.li]) {
+        const v = S.vectors[S.nodeSel.li][S.nodeSel.vi];
+        cutLineAt(v[0], v[1]);
+      } else {
+        toast("Point at a centerline (or select a node) to cut it.", "", 3500);
+      }
+      break;
+    }
+    case "j": case "J": {
+      if (!S.vectors) break;
+      const p = S.pointer.over ? toImage(S.pointer.x, S.pointer.y) : { x: -1e9, y: -1e9 };
+      joinNear(p.x, p.y);
+      break;
+    }
     case "1": setMode("overlay"); break;
     case "2": setMode("original"); break;
     case "3": setMode("mask"); break;
@@ -1426,7 +1570,7 @@ $("#undobtn").addEventListener("click", () => vectorToolActive() ? vecUndo() : u
 $("#redobtn").addEventListener("click", () => vectorToolActive() ? vecRedo() : redo());
 $("#delselbtn").addEventListener("click", () =>
   S.nodeMulti.length ? deleteMarkedNodes() : deleteSelection());
-$("#fitbtn").addEventListener("click", fitView);
+$("#fitbtn").addEventListener("click", fitAll);
 
 /* ------------------------------------------------------------------ */
 /* Settings panel helpers                                               */
@@ -1501,10 +1645,11 @@ function resetEditState() {
   S.vecDirty = false; S.nodeSel = null; S.nodeDrag = false; S.nodeMoved = false;
   S.nodeMarquee = null; S.nodeMulti = [];
   S.vecPen = null; S.vecHistory = []; S.vecRedo = [];
+  S.viewHinted = false;
   updateEditButtons();
 }
 
-async function loadPhoto() {
+async function loadPhoto(keepView = false) {
   const { bitmap } = await fetchBitmap("/api/image/photo.jpg");
   S.photo = bitmap;
   $("#emptystate").style.display = "none";
@@ -1512,8 +1657,10 @@ async function loadPhoto() {
   S.hasMask = false;
   S.hasSkel = false;
   resetEditState();
-  gcpReset(false);   // GCPs belong to the previous photo
-  fitView();
+  if (!keepView) {
+    gcpReset(false);   // GCPs belong to the previous photo
+    fitView();
+  }
 }
 
 async function loadMaskAndSkeleton() {
@@ -1561,6 +1708,79 @@ function renderSkelCanvas() {
   c2d.restore();
   S.sbaseCtx.clearRect(0, 0, S.sbase.width, S.sbase.height);
   S.sbaseCtx.drawImage(S.skel, 0, 0);
+}
+
+/* Load a different edit window (or the whole image) WITHOUT moving the
+ * picture on screen: screen = full * (scale * k) + (tx - origin * scale * k),
+ * so keeping `a` and `b` fixed across the swap keeps every pixel where it is.
+ */
+async function setEditView(rect) {
+  if (!S.image || S.viewBusy) return;
+  S.viewBusy = true;
+  const a = detailRatio();
+  const b = S.view.tx - S.edit.x * a, b2 = S.view.ty - S.edit.y * a;
+  try {
+    const sum = await apiPost("/api/edit_view", rect || { whole: true });
+    applySummary(sum);
+    await loadPhoto(true);
+    if (sum.has_result) await loadMaskAndSkeleton();
+    S.view.k = a / S.edit.scale;
+    S.view.tx = b + S.edit.x * a;
+    S.view.ty = b2 + S.edit.y * a;
+    updateStats();
+    requestDraw();
+  } catch (err) {
+    toast(`Could not move the edit window: ${err.message}`, "error", 8000);
+  } finally {
+    S.viewBusy = false;
+  }
+}
+
+/* Zoom in past native detail and the server hands over that REGION at full
+ * resolution (brush paints real pixels, a 2 px seam is reachable); zoom back
+ * out and the overview returns. Never swaps mid-edit — unapplied strokes live
+ * only in the browser canvas and would be lost. */
+const VIEW_MARGIN = 1.25;        // load a bit more than is visible, for panning
+const VIEW_MAX = 4096;           // must match MAX_EDIT_DIM on the server
+const VIEW_MIN = 1536;           // never load a window barely bigger than the view
+function maybeSwitchEditView() {
+  if (!S.photo || !S.image || S.viewBusy || S.busy) return;
+  const windowed = S.edit.full_width < S.image.width || S.edit.full_height < S.image.height;
+  // Hysteresis: hand over the full-res window at native detail, take it back
+  // as soon as the user zooms out below it — a window covers only part of the
+  // grave, so it must not linger once the overview is what is on screen.
+  const wantFull = detailRatio() >= 1 && (S.edit.scale < 1 || windowed);
+  const wantWhole = windowed && detailRatio() < 0.9;
+  if (!wantFull && !wantWhole) return;
+
+  if (S.dirty || S.vecDirty) {
+    if (!S.viewHinted) {
+      S.viewHinted = true;
+      toast("Apply your edits to switch to full-resolution editing at this zoom.", "", 7000);
+    }
+    return;
+  }
+  clearTimeout(S.viewTimer);
+  S.viewTimer = setTimeout(() => {
+    if (wantWhole) { setEditView(null); return; }
+    const v = viewportFullRect();
+    // Grow around the viewport, then clamp to the canvas cap and the image.
+    // The floor matters: a window barely bigger than the viewport would be
+    // re-fetched on every small pan.
+    const w = Math.min(VIEW_MAX, Math.max(VIEW_MIN, Math.round(v.w * VIEW_MARGIN)));
+    const h = Math.min(VIEW_MAX, Math.max(VIEW_MIN, Math.round(v.h * VIEW_MARGIN)));
+    if (w >= S.image.width && h >= S.image.height) { setEditView(null); return; }
+    const cx = v.x + v.w / 2, cy = v.y + v.h / 2;
+    const x = Math.round(Math.min(Math.max(0, cx - w / 2), Math.max(0, S.image.width - w)));
+    const y = Math.round(Math.min(Math.max(0, cy - h / 2), Math.max(0, S.image.height - h)));
+    // Already covering the viewport at full detail? Nothing to do.
+    const cur = S.edit;
+    if (cur.scale >= 1 &&
+        v.x >= cur.x && v.y >= cur.y &&
+        v.x + v.w <= cur.x + cur.full_width &&
+        v.y + v.h <= cur.y + cur.full_height) return;
+    setEditView({ x, y, w, h });
+  }, 350);
 }
 
 function applySummary(sum) {
@@ -1719,7 +1939,7 @@ $("#applyedits").addEventListener("click", async () => {
       const addImg = new ImageData(ew, eh), remImg = new ImageData(ew, eh);
       let nAdd = 0, nRem = 0;
       for (let i = 3; i < cur.length; i += 4) {
-        const c = cur[i] > 10, b = bas[i] > 10;
+        const c = cur[i] >= 128, b = bas[i] >= 128;   // same cut as the server
         if (c && !b) { addImg.data[i] = 255; nAdd++; }
         else if (!c && b) { remImg.data[i] = 255; nRem++; }
       }

@@ -100,11 +100,18 @@ class Studio:
         self.result: PipelineResult | None = None
 
         # Edit-resolution artifacts
+        # The edit canvas is a WINDOW into the full-resolution image:
+        # ``edit_rect`` (x, y, w, h in full-res px) is the region being edited
+        # and ``edit_scale`` how much it had to shrink to fit MAX_EDIT_DIM.
+        # Whole image + scale < 1 is the overview; a small rect gives scale
+        # 1.0, i.e. painting in REAL pixels (no round-trip thickening).
+        self.edit_rect: tuple[int, int, int, int] = (0, 0, 0, 0)
         self.edit_scale: float = 1.0
         self.edit_size: tuple[int, int] = (0, 0)        # (w, h)
         self.photo_jpeg: bytes | None = None            # edit-res photo
         self.edit_image: np.ndarray | None = None       # edit-res RGB, for SAM
         self.mask_basis: np.ndarray | None = None       # bool, edit-res, as served
+        self.basis_rect: tuple[int, int, int, int] | None = None  # its window
         self.mask_version: int = 0
 
         # SAM2 promptable segmentation (walls / stones / anything the bone
@@ -167,49 +174,97 @@ class Studio:
         self.mask_version += 1
 
         h, w = img.shape[:2]
-        self.edit_scale = min(1.0, MAX_EDIT_DIM / max(h, w))
+        self.set_edit_view(0, 0, w, h)
+        logger.info("Image loaded: %s (%dx%d, edit %dx%d, georef=%s)",
+                    path.name, w, h, *self.edit_size, georef is not None)
+
+    def set_edit_view(self, x: int, y: int, w: int, h: int) -> None:
+        """Point the edit canvas at a region of the full-resolution image.
+
+        The whole image is the overview (scale < 1 for a big photo); zooming
+        in hands a smaller rect, and once it fits MAX_EDIT_DIM the scale is
+        1.0 — the brush then paints REAL pixels, so a 1 px stroke stays 1 px
+        instead of growing through the downscale/upscale round trip.
+        """
+        assert self.image is not None
+        ih, iw = self.image.shape[:2]
+        x = int(max(0, min(x, iw - 1)))
+        y = int(max(0, min(y, ih - 1)))
+        w = int(max(16, min(w, iw - x)))
+        h = int(max(16, min(h, ih - y)))
+        self.edit_rect = (x, y, w, h)
+        self.edit_scale = min(1.0, MAX_EDIT_DIM / max(w, h))
         ew = max(1, round(w * self.edit_scale))
         eh = max(1, round(h * self.edit_scale))
         self.edit_size = (ew, eh)
-        small = img if self.edit_scale >= 1.0 else np.asarray(
-            Image.fromarray(img).resize((ew, eh), Image.BILINEAR)
+        crop = self.image[y:y + h, x:x + w]
+        small = crop if self.edit_scale >= 1.0 else np.asarray(
+            Image.fromarray(crop).resize((ew, eh), Image.BILINEAR)
         )
         buf = io.BytesIO()
         Image.fromarray(small).save(buf, "JPEG", quality=88)
         self.photo_jpeg = buf.getvalue()
         self.edit_image = small
-        self.sam_ready = False
-        logger.info("Image loaded: %s (%dx%d, edit %dx%d, georef=%s)",
-                    path.name, w, h, ew, eh, georef is not None)
+        self.mask_basis = None          # the served basis belonged to the old window
+        self.basis_rect = None
+        self.sam_ready = False          # SAM has to encode the new crop
+        logger.info("Edit view: %dx%d at (%d, %d) -> canvas %dx%d (scale %.3f)",
+                    w, h, x, y, ew, eh, self.edit_scale)
+
+    # -- coordinate transforms between full-res and edit-canvas space ------ #
+    def to_view(self, x: float, y: float) -> tuple[float, float]:
+        rx, ry, _, _ = self.edit_rect
+        s = self.edit_scale
+        return ((x - rx) * s, (y - ry) * s)
+
+    def to_full(self, x: float, y: float) -> tuple[float, float]:
+        rx, ry, _, _ = self.edit_rect
+        s = self.edit_scale or 1.0
+        return (x / s + rx, y / s + ry)
 
     def downscale_binary(self, full01: np.ndarray) -> np.ndarray:
-        """Full-res {0,1} -> edit-res bool. INTER_AREA + >0 keeps thin lines
-        visible (any covered source pixel survives the downscale)."""
+        """Full-res {0,1} -> the edit canvas (window crop, then scale).
+
+        INTER_AREA + >0 keeps thin lines visible (any covered source pixel
+        survives the downscale). At scale 1.0 the crop is returned as-is, so
+        a full-res window is pixel-exact in both directions.
+        """
+        x, y, w, h = self.edit_rect
+        crop = full01[y:y + h, x:x + w]
         ew, eh = self.edit_size
-        if full01.shape == (eh, ew):
-            return full01 > 0
-        small = cv2.resize((full01 * 255).astype(np.uint8), (ew, eh),
+        if crop.shape == (eh, ew):
+            return crop > 0
+        small = cv2.resize((crop * 255).astype(np.uint8), (ew, eh),
                            interpolation=cv2.INTER_AREA)
         return small > 0
 
-    def upscale_binary(self, small_bool: np.ndarray) -> np.ndarray:
-        """Edit-res bool -> full-res bool (NEAREST blocks)."""
+    def upscale_binary(self, small_bool: np.ndarray,
+                       rect: tuple[int, int, int, int] | None = None) -> np.ndarray:
+        """Edit canvas bool -> FULL-IMAGE bool (NEAREST blocks, pasted at the
+        window's offset). ``rect`` defaults to the current window; pass the
+        window an edit was made in when it may since have moved."""
         assert self.image is not None
-        h, w = self.image.shape[:2]
+        ih, iw = self.image.shape[:2]
+        x, y, w, h = rect if rect is not None else self.edit_rect
+        out = np.zeros((ih, iw), dtype=bool)
         if small_bool.shape == (h, w):
-            return small_bool
+            out[y:y + h, x:x + w] = small_bool
+            return out
         up = cv2.resize(small_bool.astype(np.uint8), (w, h),
-                        interpolation=cv2.INTER_NEAREST)
-        return up > 0
+                        interpolation=cv2.INTER_NEAREST) > 0
+        out[y:y + h, x:x + w] = up
+        return out
 
     def result_summary(self) -> dict:
         r = self.result
         ew, eh = self.edit_size
+        rx, ry, rw, rh = self.edit_rect
         base = {
             "has_image": self.image is not None,
             "has_result": r is not None,
             "mask_version": self.mask_version,
-            "edit": {"width": ew, "height": eh, "scale": self.edit_scale},
+            "edit": {"width": ew, "height": eh, "scale": self.edit_scale,
+                     "x": rx, "y": ry, "full_width": rw, "full_height": rh},
         }
         if self.image is not None and self.source_path is not None:
             h, w = self.image.shape[:2]
@@ -420,6 +475,36 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             state.lock.release()
         return state.result_summary()
 
+    @app.post("/api/edit_view")
+    async def edit_view(payload: dict = Body(...)):
+        """Move the editing window over the full-resolution image.
+
+        ``{"whole": true}`` goes back to the overview; ``{x, y, w, h}`` (in
+        FULL-res pixels) hands the client that region — at scale 1.0 once it
+        fits MAX_EDIT_DIM, which is what makes the brush pixel-exact and lets
+        the user reach a 2 px seam between two bones. The mask itself is
+        untouched: only what the browser gets to see and edit changes.
+        """
+        if state.image is None:
+            raise HTTPException(400, "Load an image first.")
+        _acquire()
+        try:
+            h, w = state.image.shape[:2]
+            if payload.get("whole"):
+                state.set_edit_view(0, 0, w, h)
+            else:
+                try:
+                    x = int(round(float(payload["x"])))
+                    y = int(round(float(payload["y"])))
+                    rw = int(round(float(payload["w"])))
+                    rh = int(round(float(payload["h"])))
+                except (KeyError, TypeError, ValueError):
+                    raise HTTPException(400, "Need x, y, w, h (full-res px) or whole=true.")
+                state.set_edit_view(x, y, rw, rh)
+            return state.result_summary()
+        finally:
+            state.lock.release()
+
     @app.get("/api/image/photo.jpg")
     async def photo():
         if state.photo_jpeg is None:
@@ -436,6 +521,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 raise HTTPException(404, "No result yet — run inference first.")
             small = state.downscale_binary(state.result.mask)
             state.mask_basis = small
+            state.basis_rect = state.edit_rect
             data = _png_rgba(small)
             version = state.mask_version
         finally:
@@ -454,9 +540,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         try:
             if state.result is None:
                 raise HTTPException(404, "No result yet — run inference first.")
-            s = state.edit_scale
+            # Every polyline is sent, including ones outside the window:
+            # /api/set_vectors takes the list as the complete geometry, so
+            # clipping here would delete everything off-screen.
             polylines = [
-                [[round(x * s, 2), round(y * s, 2)] for x, y in line]
+                [[round(vx, 2), round(vy, 2)]
+                 for vx, vy in (state.to_view(x, y) for x, y in line)]
                 for line in state.result.polylines_px
             ]
             ew, eh = state.edit_size
@@ -492,9 +581,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             if state.result is None:
                 raise HTTPException(400, "Run inference first.")
             lines_edit = payload.get("polylines") or []
-            s = state.edit_scale or 1.0
             polylines_px = [
-                [(float(x) / s, float(y) / s) for x, y in line]
+                [state.to_full(float(x), float(y)) for x, y in line]
                 for line in lines_edit if len(line) >= 2
             ]
             r = state.result
@@ -673,15 +761,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             edited = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA"))
             if edited.shape[:2] != state.mask_basis.shape:
                 raise HTTPException(400, "Edited mask has the wrong resolution.")
-            edited_bool = edited[..., 3] > 10
+            # Half-covered antialias fringe pixels are NOT mask: the brush
+            # paints at full alpha, so >= 50% coverage is the honest cut and
+            # it keeps an N px brush N px wide.
+            edited_bool = edited[..., 3] >= 128
 
             add = edited_bool & ~state.mask_basis
             rem = ~edited_bool & state.mask_basis
             mask_changed = bool(add.any() or rem.any())
             new_mask = state.result.mask.copy()
+            basis_rect = state.basis_rect
             mask_add_full = mask_rem_full = None
             if add.any():
-                mask_add_full = state.upscale_binary(add)
+                mask_add_full = state.upscale_binary(add, basis_rect)
                 new_mask[mask_add_full] = 1
                 # Remember user-added regions so skeleton filters never touch
                 # them on this or any later rebuild.
@@ -689,7 +781,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     state.mask_added = np.zeros(new_mask.shape, dtype=bool)
                 state.mask_added |= mask_add_full
             if rem.any():
-                mask_rem_full = state.upscale_binary(rem)
+                mask_rem_full = state.upscale_binary(rem, basis_rect)
                 new_mask[mask_rem_full] = 0
                 if state.mask_added is not None:
                     state.mask_added &= ~mask_rem_full
@@ -702,7 +794,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 arr = np.asarray(Image.open(io.BytesIO(blob)).convert("RGBA"))
                 if arr.shape[:2] != state.mask_basis.shape:
                     raise HTTPException(400, "Centerline edit mask has the wrong resolution.")
-                return arr[..., 3] > 10
+                return arr[..., 3] >= 128
 
             sk_add = _read_edit_mask(skel_add_data) if skel_add_data else None
             sk_rem = _read_edit_mask(skel_rem_data) if skel_rem_data else None
@@ -721,9 +813,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                         sk_rem.astype(np.uint8),
                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
                     ) > 0
-                cl_add_new = state.upscale_binary(sk_add) if sk_add is not None else \
+                cl_add_new = state.upscale_binary(sk_add, basis_rect) if sk_add is not None else \
                     np.zeros((h, w), dtype=bool)
-                cl_rem_new = state.upscale_binary(sk_rem) if sk_rem is not None else \
+                cl_rem_new = state.upscale_binary(sk_rem, basis_rect) if sk_rem is not None else \
                     np.zeros((h, w), dtype=bool)
                 if state.cl_add is None:
                     state.cl_add = np.zeros((h, w), dtype=bool)
@@ -995,7 +1087,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 epsg = int(str(epsg_raw).strip()) if str(epsg_raw or "").strip() else None
             except ValueError:
                 raise HTTPException(400, f"EPSG must be a number, got: {epsg_raw}")
-            scale = state.edit_scale
             extras: dict = {}
 
             if payload.get("auto"):
@@ -1006,7 +1097,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 # swap and retry once, reporting the correction to the UI.
                 from boneseg.data.georef_fit import auto_assign_gcps
                 try:
-                    clicks = [(float(c["px"]) / scale, float(c["py"]) / scale)
+                    clicks = [state.to_full(float(c["px"]), float(c["py"]))
                               for c in payload.get("clicks") or []]
                 except (KeyError, TypeError, ValueError):
                     raise HTTPException(400, "Every click needs px and py.")
@@ -1044,8 +1135,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                         raise HTTPException(400, "Every point needs numeric E and N.")
                     if swap:
                         e, n = n, e
-                    gcps.append({"px": float(g["px"]) / scale,
-                                 "py": float(g["py"]) / scale, "e": e, "n": n})
+                    gx, gy = state.to_full(float(g["px"]), float(g["py"]))
+                    gcps.append({"px": gx, "py": gy, "e": e, "n": n})
             try:
                 georef2, residuals, rms = georef_from_gcps(gcps, epsg)
             except (ValueError, RuntimeError) as exc:

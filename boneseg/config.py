@@ -87,6 +87,15 @@ class PostprocessSettings:
 
     threshold: float = 0.5          # sigmoid threshold (training-eval value)
     min_component_px: int = 32      # drop mask blobs smaller than this
+    erode_px: int = 0               # thin the predicted mask by N px (0 = off)
+
+    # Adaptive (local) thresholding — splits touching bones a global cutoff
+    # fuses, at the cost of more background false positives. Off by default;
+    # when on, `threshold` above is ignored in favor of the local rule.
+    threshold_mode: str = "global"  # "global" | "adaptive"
+    adaptive_block: int = 21        # local-neighborhood window (odd px)
+    adaptive_offset: float = -0.03  # subtracted from the local mean
+    adaptive_floor: float = 0.30    # absolute minimum prob to keep anywhere
 
     # Skeletonization
     prune_branch_px: int = 20       # remove terminal skeleton branches shorter than this

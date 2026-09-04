@@ -1,6 +1,7 @@
 """Mask cleanup, skeletonization and vectorization."""
 
 from boneseg.postprocessing.cleanup import (
+    adaptive_threshold_and_clean,
     count_components,
     remove_component_at,
     threshold_and_clean,
@@ -18,6 +19,7 @@ from boneseg.postprocessing.vectorize import (
 )
 
 __all__ = [
+    "adaptive_threshold_and_clean",
     "apply_centerline_edits",
     "count_components",
     "remove_component_at",

@@ -140,10 +140,26 @@ class BonePipeline:
         inference_seconds: float = 0.0,
     ) -> PipelineResult:
         """Mask cleanup + skeleton + vectors from a (possibly cached) prob map."""
-        from boneseg.postprocessing.cleanup import threshold_and_clean
+        from boneseg.postprocessing.cleanup import (
+            adaptive_threshold_and_clean,
+            threshold_and_clean,
+        )
 
         t0 = time.time()
-        mask = threshold_and_clean(prob, settings.threshold, settings.min_component_px)
+        if settings.threshold_mode == "adaptive":
+            mask = adaptive_threshold_and_clean(
+                prob,
+                block_size=settings.adaptive_block,
+                offset=settings.adaptive_offset,
+                floor=settings.adaptive_floor,
+                min_size=settings.min_component_px,
+                erode_px=settings.erode_px,
+            )
+        else:
+            mask = threshold_and_clean(
+                prob, settings.threshold, settings.min_component_px,
+                erode_px=settings.erode_px,
+            )
         return self._assemble(
             source_path, image, georef, prob, mask, settings, inference_seconds, time.time() - t0
         )

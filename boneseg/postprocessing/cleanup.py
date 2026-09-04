@@ -28,12 +28,66 @@ def _remove_small_objects(binary: np.ndarray, min_size: int) -> np.ndarray:
     return remove_small_objects(binary, min_size=min_size)
 
 
-def threshold_and_clean(prob: np.ndarray, threshold: float, min_size: int) -> np.ndarray:
-    """Binarize a float probability map and remove tiny blobs.
+def _erode(binary: np.ndarray, px: int) -> np.ndarray:
+    """Shave ``px`` pixels off the mask boundary (thin the predicted band).
+
+    Thinning the prediction at inference (a) severs the thin bridge where two
+    close bones' outline bands touch, so their centerlines split into two, and
+    (b) brings the band closer to the ~6px annotation width. The centerline
+    itself is width-invariant, so this only changes the vector where a merge is
+    actually broken; elsewhere it just cleans up the mask. Too much erosion
+    snaps genuinely thin bones, so this is a small, opt-in amount (0 = off).
+    """
+    if px <= 0:
+        return binary
+    from scipy import ndimage as ndi  # deferred: keep import cost off the hot path
+    return ndi.binary_erosion(binary, iterations=int(px))
+
+
+def threshold_and_clean(
+    prob: np.ndarray, threshold: float, min_size: int, erode_px: int = 0
+) -> np.ndarray:
+    """Binarize a float probability map, optionally thin it, and drop tiny blobs.
 
     Returns a uint8 {0, 1} mask with the same shape as ``prob``.
     """
     binary = prob >= threshold
+    binary = _erode(binary, erode_px)
+    if min_size > 0:
+        binary = _remove_small_objects(binary, min_size)
+    return binary.astype(np.uint8)
+
+
+def adaptive_threshold_and_clean(
+    prob: np.ndarray,
+    block_size: int,
+    offset: float,
+    floor: float,
+    min_size: int,
+    erode_px: int = 0,
+) -> np.ndarray:
+    """Binarize with a LOCAL (adaptive) threshold, then remove tiny blobs.
+
+    Instead of one global cutoff, each pixel is kept when it exceeds the mean
+    of its local ``block_size`` neighborhood (minus ``offset``) AND clears an
+    absolute ``floor``. Because two touching bones have a slight probability
+    dip in the seam between them, the local threshold carves that dip out —
+    splitting outlines that a global 0.5 fuses into one thick band — while the
+    ``floor`` keeps texture in low-probability background (soil, stone) from
+    lighting up everywhere. Trade-off: more false positives on confusing
+    backgrounds than the global threshold; easy to delete in the editor.
+
+    Returns a uint8 {0, 1} mask with the same shape as ``prob``.
+    """
+    from skimage.filters import threshold_local  # deferred: heavy import
+
+    prob = prob.astype(np.float32, copy=False)
+    block = max(3, int(block_size))
+    if block % 2 == 0:                 # skimage requires an odd window
+        block += 1
+    local_t = threshold_local(prob, block_size=block, offset=float(offset))
+    binary = (prob > local_t) & (prob >= float(floor))
+    binary = _erode(binary, erode_px)
     if min_size > 0:
         binary = _remove_small_objects(binary, min_size)
     return binary.astype(np.uint8)

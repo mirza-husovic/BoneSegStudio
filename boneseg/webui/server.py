@@ -224,11 +224,15 @@ class Studio:
 # --------------------------------------------------------------------------- #
 def _pp_from(payload: dict) -> PostprocessSettings:
     d = PostprocessSettings()
+    mode = "adaptive" if payload.get("adaptive") else d.threshold_mode
     return PostprocessSettings(
         threshold=float(payload.get("threshold", d.threshold)),
         min_component_px=int(payload.get("min_component_px", d.min_component_px)),
         prune_branch_px=int(payload.get("prune_branch_px", d.prune_branch_px)),
         min_skeleton_px=int(payload.get("min_skeleton_px", d.min_skeleton_px)),
+        threshold_mode=mode,
+        adaptive_floor=float(payload.get("adaptive_floor", d.adaptive_floor)),
+        erode_px=int(payload.get("erode_px", d.erode_px)),
     )
 
 
@@ -355,6 +359,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 "min_component_px": d.min_component_px,
                 "prune_branch_px": d.prune_branch_px,
                 "min_skeleton_px": d.min_skeleton_px,
+                "adaptive": d.threshold_mode == "adaptive",
+                "adaptive_floor": d.adaptive_floor,
+                "erode_px": d.erode_px,
                 "opacity": disp.overlay_opacity,
                 "use_tta": config.inference.use_tta,
                 "out_dir": str(OUTPUTS_DIR),

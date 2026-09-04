@@ -1432,17 +1432,34 @@ function slider(id, valId, fmt = (v) => v) {
 }
 const thresholdSl = slider("#threshold", "#thval");
 const minCompSl = slider("#mincomp", "#mcval", (v) => `${v} px`);
+const erodeSl = slider("#erode", "#erval", (v) => (v > 0 ? `${v} px` : "off"));
 const pruneSl = slider("#prune", "#prval", (v) => `${v} px`);
 const minSkelSl = slider("#minskel", "#msval", (v) => `${v} px`);
 const opacitySl = slider("#opacity", "#opval");
 $("#opacity").addEventListener("input", () => { S.opacity = opacitySl.get(); requestDraw(); });
 
+const adaptiveCb = $("#adaptive");
+const adaptiveFloorSl = slider("#adaptivefloor", "#afval");
+function syncAdaptiveUi() {
+  const on = adaptiveCb.checked;
+  // Adaptive replaces the global cutoff: hide the floor row unless it's on,
+  // and dim the plain threshold slider so it's clear it no longer applies.
+  $("#afloorrow").hidden = !on;
+  $("#adaptivefloor").hidden = !on;
+  $("#threshold").disabled = on;
+  $("#thval").textContent = on ? "(adaptive)" : thresholdSl.get();
+}
+adaptiveCb.addEventListener("change", syncAdaptiveUi);
+
 function ppSettings() {
   return {
     threshold: thresholdSl.get(),
     min_component_px: minCompSl.get(),
+    erode_px: erodeSl.get(),
     prune_branch_px: pruneSl.get(),
     min_skeleton_px: minSkelSl.get(),
+    adaptive: adaptiveCb.checked,
+    adaptive_floor: adaptiveFloorSl.get(),
   };
 }
 
@@ -2348,8 +2365,12 @@ async function init() {
   $("#ttacb").checked = st.defaults.use_tta;
   thresholdSl.set(st.defaults.threshold);
   minCompSl.set(st.defaults.min_component_px);
+  erodeSl.set(st.defaults.erode_px ?? 0);
   pruneSl.set(st.defaults.prune_branch_px);
   minSkelSl.set(st.defaults.min_skeleton_px);
+  adaptiveCb.checked = !!st.defaults.adaptive;
+  adaptiveFloorSl.set(st.defaults.adaptive_floor ?? 0.30);
+  syncAdaptiveUi();
   opacitySl.set(st.defaults.opacity);
   S.opacity = st.defaults.opacity;
   $("#outdir").value = st.defaults.out_dir;

@@ -76,12 +76,21 @@ class PipelineResult:
     skeleton: np.ndarray                # uint8 {0,1} pruned skeleton
     polylines_px: list[Polyline]        # centerlines, pixel coords (SVG space)
     polylines_out: list[Polyline]       # centerlines, GeoJSON coords
-    rings_out: list[Polyline]           # outline polygons, GeoJSON coords
+    # Outline polygons in GeoJSON coords. Polygonizing a 65 MP mask costs
+    # ~0.8 s and only exports need it, so it is computed on demand: read it
+    # through ``rings()``, never as a field.
+    rings_out: list[Polyline] | None
     n_components: int
     fg_pixels: int
     inference_seconds: float
     postprocess_seconds: float
     stats: dict = field(default_factory=dict)
+
+    def rings(self) -> list[Polyline]:
+        """Outline polygons, polygonized on first use and cached."""
+        if self.rings_out is None:
+            self.rings_out = mask_to_rings(self.mask, self.georef)
+        return self.rings_out
 
     @property
     def height(self) -> int:
@@ -97,8 +106,13 @@ class PipelineResult:
 
 
 def _line_mostly_inside(line: Polyline, region: np.ndarray, frac: float = 0.5) -> bool:
-    """Whether at least ``frac`` of a polyline's points fall inside ``region``."""
-    if not region.any() or len(line) == 0:
+    """Whether at least ``frac`` of a polyline's points fall inside ``region``.
+
+    The caller checks once that ``region`` has any pixels at all: calling
+    ``region.any()`` on a 65 MP mask per centerline was two seconds of every
+    "Apply edits".
+    """
+    if len(line) == 0:
         return False
     h, w = region.shape
     xs = np.clip(np.round([p[0] for p in line]).astype(int), 0, w - 1)
@@ -257,8 +271,9 @@ class BonePipeline:
             from scipy import ndimage as ndi
             removal |= ndi.binary_dilation(np.asarray(cl_remove) > 0, iterations=2)
 
+        removes_anything = bool(removal.any())
         kept = [line for line in (result.polylines_px or [])
-                if not _line_mostly_inside(line, removal)]
+                if not (removes_anything and _line_mostly_inside(line, removal))]
         dropped = len(result.polylines_px or []) - len(kept)
 
         added = 0
@@ -268,19 +283,26 @@ class BonePipeline:
         ):
             if region is None or not region.any():
                 continue
-            graph = build_skeleton_graph(region.astype(np.uint8))
+            # Skeletonize only the painted patch's bounding box — thinning a
+            # whole 65 MP frame to find a 300 px stroke took a second.
+            ys, xs = np.nonzero(region)
+            y0, y1 = int(ys.min()), int(ys.max()) + 1
+            x0, x1 = int(xs.min()), int(xs.max()) + 1
+            graph = build_skeleton_graph(
+                region[y0:y1, x0:x1].astype(np.uint8), settings.skeleton_algo)
             if graph is not None:
                 # Trim the medial axis' end spurs (a painted blob sprouts a
                 # few), but never drop a whole component: a hand-painted bone
                 # survives however small.
                 graph = prune_graph(graph, prune_branch_px=settings.prune_branch_px,
                                     min_component_px=0)
-            fresh = graph_to_polylines_px(
-                graph,
-                downsample_k=settings.spline_downsample,
-                spline_smooth=settings.spline_smooth,
-                density=settings.spline_density,
-            )
+            fresh = [[(x + x0, y + y0) for x, y in line]
+                     for line in graph_to_polylines_px(
+                         graph,
+                         downsample_k=settings.spline_downsample,
+                         spline_smooth=settings.spline_smooth,
+                         density=settings.spline_density,
+                     )]
             kept.extend(fresh)
             added += len(fresh)
 
@@ -297,7 +319,7 @@ class BonePipeline:
             skeleton=skeleton,
             polylines_px=kept,
             polylines_out=polylines_px_to_output(kept, result.georef),
-            rings_out=mask_to_rings(mask, result.georef),
+            rings_out=None,                 # polygonized on demand (export only)
             n_components=count_components(mask),
             fg_pixels=int(mask.sum()),
             inference_seconds=result.inference_seconds,
@@ -359,7 +381,7 @@ class BonePipeline:
         if base_skeleton is not None and has_cl:
             skeleton, graph = apply_centerline_edits(base_skeleton, cl_add, cl_remove)
         else:
-            graph = build_skeleton_graph(mask)
+            graph = build_skeleton_graph(mask, settings.skeleton_algo)
             unpruned = graph_to_image(graph, mask.shape)  # full medial axis
             if graph is not None:
                 graph = prune_graph(
@@ -387,7 +409,6 @@ class BonePipeline:
             density=settings.spline_density,
         )
         polylines_out = polylines_px_to_output(polylines_px, georef)
-        rings_out = mask_to_rings(mask, georef)
 
         result = PipelineResult(
             source_path=Path(source_path),
@@ -398,7 +419,7 @@ class BonePipeline:
             skeleton=skeleton,
             polylines_px=polylines_px,
             polylines_out=polylines_out,
-            rings_out=rings_out,
+            rings_out=None,                     # polygonized on demand
             n_components=count_components(mask),
             fg_pixels=int(mask.sum()),
             inference_seconds=inference_seconds,
@@ -458,13 +479,13 @@ class BonePipeline:
             )
             polygons_path = out_dir / f"{stem}_polygons.geojson"
             with open(polygons_path, "w", encoding="utf-8") as f:
-                json.dump(rings_to_geojson_dict(result.rings_out, result.georef), f)
+                json.dump(rings_to_geojson_dict(result.rings(), result.georef), f)
             written.append(polygons_path)
         if export.save_dxf:
             # The photo rides along as an IMAGE underlay (written next to
             # the DXF, rectified when georeferenced) so any CAD opens it
             # already under the vectors.
-            dxf_path = save_dxf(result.rings_out, result.polylines_out,
+            dxf_path = save_dxf(result.rings(), result.polylines_out,
                                 out_dir / f"{stem}.dxf", result.georef,
                                 image_rgb=result.image)
             if dxf_path is not None:
@@ -495,7 +516,7 @@ class BonePipeline:
             written.extend(
                 append_to_master(
                     Path(export.output_dir), stem,
-                    result.rings_out, result.polylines_out, result.georef,
+                    result.rings(), result.polylines_out, result.georef,
                     image_width=result.width, image_height=result.height,
                 )
             )

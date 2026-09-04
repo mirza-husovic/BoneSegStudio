@@ -65,7 +65,6 @@ from boneseg.pipeline import BonePipeline, PipelineResult
 from boneseg.postprocessing import (
     carve_mask_by_centerlines,
     count_components,
-    mask_to_rings,
     polylines_px_to_output,
     rasterize_polylines,
 )
@@ -106,6 +105,17 @@ class Studio:
         # Whole image + scale < 1 is the overview; a small rect gives scale
         # 1.0, i.e. painting in REAL pixels (no round-trip thickening).
         self.edit_rect: tuple[int, int, int, int] = (0, 0, 0, 0)
+        # The whole-image view, built once per photo: re-encoding a 4096 px
+        # JPEG on every zoom-out cost >1 s, and the overview never changes.
+        self._whole_view: tuple | None = None
+        self.overview_jpeg: bytes | None = None   # small backdrop for the client
+        # Rendered mask PNGs keyed by (mask_version, window): zooming in and
+        # out between edits asks for the same crops over and over, and the
+        # 4096 px overview PNG alone took ~280 ms to build.
+        self._mask_png_cache: dict[tuple, tuple[bytes, np.ndarray]] = {}
+        # Encoded window JPEGs by rect — panning back to a window you just
+        # left should not re-encode it (~150 ms for a 3072 px crop).
+        self._view_jpeg_cache: dict[tuple, bytes] = {}
         self.edit_scale: float = 1.0
         self.edit_size: tuple[int, int] = (0, 0)        # (w, h)
         self.photo_jpeg: bytes | None = None            # edit-res photo
@@ -165,6 +175,10 @@ class Studio:
         self.source_path = path
         self.image = img
         self.georef = georef
+        self._whole_view = None
+        self.overview_jpeg = None
+        self._mask_png_cache.clear()
+        self._view_jpeg_cache.clear()
         self.result = None
         self.mask_basis = None
         self.cl_add = None
@@ -188,6 +202,14 @@ class Studio:
         """
         assert self.image is not None
         ih, iw = self.image.shape[:2]
+        if (x, y, w, h) == (0, 0, iw, ih) and self._whole_view is not None:
+            (self.edit_rect, self.edit_scale, self.edit_size,
+             self.photo_jpeg, self.edit_image) = self._whole_view
+            self.mask_basis = None
+            self.basis_rect = None
+            self.sam_ready = False
+            logger.info("Edit view: whole image (cached)")
+            return
         x = int(max(0, min(x, iw - 1)))
         y = int(max(0, min(y, ih - 1)))
         w = int(max(16, min(w, iw - x)))
@@ -198,18 +220,44 @@ class Studio:
         eh = max(1, round(h * self.edit_scale))
         self.edit_size = (ew, eh)
         crop = self.image[y:y + h, x:x + w]
+        # At scale 1 the crop IS the edit image (a view, no copy); only a
+        # shrunken view has to be resampled.
         small = crop if self.edit_scale >= 1.0 else np.asarray(
             Image.fromarray(crop).resize((ew, eh), Image.BILINEAR)
         )
-        buf = io.BytesIO()
-        Image.fromarray(small).save(buf, "JPEG", quality=88)
-        self.photo_jpeg = buf.getvalue()
+        cached = self._view_jpeg_cache.get(self.edit_rect)
+        if cached is None:
+            buf = io.BytesIO()
+            Image.fromarray(small).save(buf, "JPEG", quality=88)
+            cached = buf.getvalue()
+            if len(self._view_jpeg_cache) > 4:
+                self._view_jpeg_cache.clear()
+            self._view_jpeg_cache[self.edit_rect] = cached
+        self.photo_jpeg = cached
         self.edit_image = small
         self.mask_basis = None          # the served basis belonged to the old window
         self.basis_rect = None
         self.sam_ready = False          # SAM has to encode the new crop
+        if (x, y, w, h) == (0, 0, iw, ih):
+            self._whole_view = (self.edit_rect, self.edit_scale, self.edit_size,
+                                self.photo_jpeg, self.edit_image)
         logger.info("Edit view: %dx%d at (%d, %d) -> canvas %dx%d (scale %.3f)",
                     w, h, x, y, ew, eh, self.edit_scale)
+
+    def overview(self) -> bytes:
+        """Small JPEG of the WHOLE photo, cached — the client paints it under
+        the edit window so zooming out never shows bare canvas."""
+        if self.overview_jpeg is None:
+            assert self.image is not None
+            h, w = self.image.shape[:2]
+            k = min(1.0, 1600 / max(h, w))
+            small = self.image if k >= 1.0 else np.asarray(
+                Image.fromarray(self.image).resize(
+                    (max(1, round(w * k)), max(1, round(h * k))), Image.BILINEAR))
+            buf = io.BytesIO()
+            Image.fromarray(small).save(buf, "JPEG", quality=80)
+            self.overview_jpeg = buf.getvalue()
+        return self.overview_jpeg
 
     # -- coordinate transforms between full-res and edit-canvas space ------ #
     def to_view(self, x: float, y: float) -> tuple[float, float]:
@@ -221,6 +269,18 @@ class Studio:
         rx, ry, _, _ = self.edit_rect
         s = self.edit_scale or 1.0
         return (x / s + rx, y / s + ry)
+
+    def mask_png(self) -> tuple[bytes, np.ndarray]:
+        """(PNG bytes, edit-res bool) of the mask in the current window."""
+        key = (self.mask_version, self.edit_rect, self.edit_size)
+        hit = self._mask_png_cache.get(key)
+        if hit is None:
+            small = self.downscale_binary(self.result.mask)
+            hit = (_png_rgba(small), small)
+            if len(self._mask_png_cache) > 6:
+                self._mask_png_cache.clear()
+            self._mask_png_cache[key] = hit
+        return hit
 
     def downscale_binary(self, full01: np.ndarray) -> np.ndarray:
         """Full-res {0,1} -> the edit canvas (window crop, then scale).
@@ -328,12 +388,19 @@ def _png_rgba(mask_bool: np.ndarray, rgb: tuple[int, int, int] = (255, 255, 255)
               alpha: np.ndarray | None = None) -> bytes:
     h, w = mask_bool.shape
     arr = np.zeros((h, w, 4), dtype=np.uint8)
-    arr[mask_bool, 0] = rgb[0]
-    arr[mask_bool, 1] = rgb[1]
-    arr[mask_bool, 2] = rgb[2]
-    arr[..., 3] = alpha if alpha is not None else mask_bool.astype(np.uint8) * 255
+    if alpha is None:
+        # One fancy-indexed write over the foreground only — filling four full
+        # planes cost 70 ms on a 12 MP overview mask.
+        arr[mask_bool] = (rgb[0], rgb[1], rgb[2], 255)
+    else:
+        arr[mask_bool, 0] = rgb[0]
+        arr[mask_bool, 1] = rgb[1]
+        arr[mask_bool, 2] = rgb[2]
+        arr[..., 3] = alpha
     buf = io.BytesIO()
-    Image.fromarray(arr, "RGBA").save(buf, "PNG")
+    # compress_level 1: a mask PNG is huge but trivially compressible, and the
+    # default level 6 spent ~200 ms on a 3072 px crop for a few KB less.
+    Image.fromarray(arr, "RGBA").save(buf, "PNG", compress_level=1)
     return buf.getvalue()
 
 
@@ -505,6 +572,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         finally:
             state.lock.release()
 
+    @app.get("/api/image/overview.jpg")
+    async def overview_jpg():
+        """Whole photo, small — the backdrop under the (possibly cropped)
+        edit window. Cached per image, so it costs nothing to re-request."""
+        if state.image is None:
+            raise HTTPException(404, "No image loaded.")
+        _acquire()
+        try:
+            return Response(state.overview(), media_type="image/jpeg",
+                            headers={"Cache-Control": "max-age=300"})
+        finally:
+            state.lock.release()
+
     @app.get("/api/image/photo.jpg")
     async def photo():
         if state.photo_jpeg is None:
@@ -519,10 +599,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         try:
             if state.result is None:
                 raise HTTPException(404, "No result yet — run inference first.")
-            small = state.downscale_binary(state.result.mask)
+            data, small = state.mask_png()
             state.mask_basis = small
             state.basis_rect = state.edit_rect
-            data = _png_rgba(small)
             version = state.mask_version
         finally:
             state.lock.release()
@@ -641,7 +720,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             r.polylines_out = polylines_px_to_output(polylines_px, r.georef)
             r.skeleton = new_skel
             r.mask = new_mask
-            r.rings_out = mask_to_rings(r.mask, r.georef)
+            r.rings_out = None          # polygonized again only if exported
             r.n_components = count_components(r.mask)
             r.fg_pixels = int(r.mask.sum())
             r.stats["edited"] = "vector"
@@ -1071,7 +1150,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 state.result.georef = g
                 state.result.polylines_out = polylines_px_to_output(
                     state.result.polylines_px, g)
-                state.result.rings_out = mask_to_rings(state.result.mask, g)
+                state.result.rings_out = None   # re-polygonized on demand
 
             sidecar = gcps_sidecar_path(state.source_path)
             if payload.get("clear"):

@@ -26,7 +26,7 @@ from typing import Iterator
 
 import networkx as nx
 import numpy as np
-from skimage.morphology import medial_axis
+from skimage.morphology import medial_axis, skeletonize as sk_skeletonize
 
 from boneseg.logging_setup import get_logger
 
@@ -60,11 +60,20 @@ def _remove_edge(graph: nx.Graph, s, e, key) -> None:
         graph.remove_edge(s, e)
 
 
-def build_skeleton_graph(mask01: np.ndarray) -> nx.Graph | None:
-    """Medial axis of the mask, converted to an sknw topology graph.
+def build_skeleton_graph(mask01: np.ndarray, algo: str = "skeletonize") -> nx.Graph | None:
+    """Thin the mask to a 1 px centerline and build an sknw topology graph.
 
-    Returns None when the mask is empty or sknw is unavailable (the caller
-    then degrades gracefully to "no skeleton").
+    ``algo``:
+      * ``"skeletonize"`` (default) — Zhang-Suen thinning. On a 65 MP grave it
+        takes ~0.9 s against medial_axis' ~6.4 s, which is what made every
+        "Apply edits" take ten seconds. Measured on Gr. 59: the two skeletons
+        sit 0.2 px apart on average (99th pct 1 px), and thinning yields
+        slightly FEWER fragments (362 vs 461 edges) because it grows fewer
+        spurs on bumpy outlines.
+      * ``"medial_axis"`` — the original, kept for comparison.
+
+    Returns None when sknw is unavailable (the caller then degrades
+    gracefully to "no skeleton").
     """
     if not HAS_SKNW:
         logger.warning("sknw not installed — skeletonization disabled")
@@ -72,7 +81,9 @@ def build_skeleton_graph(mask01: np.ndarray) -> nx.Graph | None:
     if mask01.sum() == 0:
         return nx.MultiGraph()
 
-    skel = medial_axis(mask01 > 0).astype(np.uint8)
+    binary = mask01 > 0
+    skel = (medial_axis(binary) if algo == "medial_axis"
+            else sk_skeletonize(binary)).astype(np.uint8)
     return sknw.build_sknw(skel, multi=True)
 
 

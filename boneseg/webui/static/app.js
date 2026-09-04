@@ -30,7 +30,8 @@ const S = {
   result: null,           // stats from server
   maskVersion: -1,
 
-  photo: null,            // ImageBitmap (edit res)
+  photo: null,            // ImageBitmap of the current edit window
+  overview: null,         // ImageBitmap of the WHOLE photo (small backdrop)
   skel: null, skelCtx: null,      // EDITABLE centerline canvas (red-on-transparent)
   sbase: null, sbaseCtx: null,    // pristine copy of skel — client-side diff basis
   vectors: null,          // centerline polylines (edit-res coords) — same as exports
@@ -38,6 +39,7 @@ const S = {
   skelTint: null,         // skeleton recolored black, for the Clean view
   mask: null, maskCtx: null,      // offscreen canvas, white-on-transparent
   tint: null, tintCtx: null, tintDirty: true,
+  tintRect: null,         // region of the tint to rebuild (null = all of it)
   backup: null, backupCtx: null,  // pre-stroke snapshot for undo rects
   hasMask: false, hasSkel: false,
   dirty: false,           // unapplied local edits
@@ -113,8 +115,21 @@ function vectorToolActive() {
   return S.tool === "pen" || S.tool === "node" ||
          (S.tool === "eraser" && activeLayer() === "skel");
 }
-function markLayerDirty(layer) {
-  if (layer === "skel") S.skelTint = null; else S.tintDirty = true;
+/* ``rect`` (image coords) limits the overlay tint rebuild to the part that
+ * actually changed — repainting the whole 12 MP tint on every brush segment
+ * was the stutter while drawing. Omit it to invalidate everything. */
+function markLayerDirty(layer, rect) {
+  if (layer === "skel") { S.skelTint = null; return; }
+  if (!S.tintDirty) S.tintRect = rect ? { ...rect } : null;
+  else if (S.tintRect && rect) {
+    const x0 = Math.min(S.tintRect.x, rect.x), y0 = Math.min(S.tintRect.y, rect.y);
+    const x1 = Math.max(S.tintRect.x + S.tintRect.w, rect.x + rect.w);
+    const y1 = Math.max(S.tintRect.y + S.tintRect.h, rect.y + rect.h);
+    S.tintRect = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  } else if (!rect) {
+    S.tintRect = null;
+  }
+  S.tintDirty = true;
 }
 
 /* Whether any raster centerline edit is pending vs the server's vectors —
@@ -201,14 +216,28 @@ function ensureCanvasResolution() {
 
 function updateTint() {
   if (!S.tintDirty || !S.mask) return;
-  S.tintCtx.globalCompositeOperation = "source-over";
-  S.tintCtx.clearRect(0, 0, S.tint.width, S.tint.height);
-  S.tintCtx.drawImage(S.mask, 0, 0);
-  S.tintCtx.globalCompositeOperation = "source-in";
-  S.tintCtx.fillStyle = MASK_COLOR;
-  S.tintCtx.fillRect(0, 0, S.tint.width, S.tint.height);
-  S.tintCtx.globalCompositeOperation = "source-over";
+  const r = S.tintRect;
+  const x = r ? Math.max(0, Math.floor(r.x)) : 0;
+  const y = r ? Math.max(0, Math.floor(r.y)) : 0;
+  const w = r ? Math.min(S.tint.width - x, Math.ceil(r.w) + 1) : S.tint.width;
+  const h = r ? Math.min(S.tint.height - y, Math.ceil(r.h) + 1) : S.tint.height;
+  if (w > 0 && h > 0) {
+    const t = S.tintCtx;
+    t.save();
+    // Clip so "source-in" only touches the region being rebuilt.
+    t.beginPath();
+    t.rect(x, y, w, h);
+    t.clip();
+    t.globalCompositeOperation = "source-over";
+    t.clearRect(x, y, w, h);
+    t.drawImage(S.mask, x, y, w, h, x, y, w, h);
+    t.globalCompositeOperation = "source-in";
+    t.fillStyle = MASK_COLOR;
+    t.fillRect(x, y, w, h);
+    t.restore();
+  }
   S.tintDirty = false;
+  S.tintRect = null;
 }
 
 function draw() {
@@ -224,10 +253,29 @@ function draw() {
   ctx.imageSmoothingEnabled = k < 3;
 
   const ew = S.edit.width, eh = S.edit.height;
+  // The edit window may cover only part of the grave; paint the whole-photo
+  // backdrop under it so the rest of the frame is never bare canvas.
+  // The whole image in view coordinates — the backdrop's extent.
+  const fullRect = () => {
+    const sc = S.edit.scale;
+    return S.image
+      ? [-S.edit.x * sc, -S.edit.y * sc, S.image.width * sc, S.image.height * sc]
+      : [0, 0, ew, eh];
+  };
+  const fillBg = (color) => { ctx.fillStyle = color; ctx.fillRect(...fullRect()); };
+  const drawPhoto = () => {
+    if (S.overview && S.image &&
+        (S.edit.full_width < S.image.width || S.edit.full_height < S.image.height)) {
+      const sc = S.edit.scale;
+      ctx.drawImage(S.overview, -S.edit.x * sc, -S.edit.y * sc,
+                    S.image.width * sc, S.image.height * sc);
+    }
+    ctx.drawImage(S.photo, 0, 0);
+  };
   if (S.mode === "original") {
-    ctx.drawImage(S.photo, 0, 0);
+    drawPhoto();
   } else if (S.mode === "overlay") {
-    ctx.drawImage(S.photo, 0, 0);
+    drawPhoto();
     if (S.hasMask) {
       updateTint();
       ctx.globalAlpha = S.opacity;
@@ -240,19 +288,16 @@ function draw() {
       strokeVectors(ctx, SKEL_COLOR);
     }
   } else if (S.mode === "mask") {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, ew, eh);
+    fillBg("#000");
     if (S.hasMask) ctx.drawImage(S.mask, 0, 0);
   } else if (S.mode === "skeleton") {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, ew, eh);
+    fillBg("#000");
     ctx.globalAlpha = 0.45;
-    ctx.drawImage(S.photo, 0, 0);
+    drawPhoto();
     ctx.globalAlpha = 1;
     if (S.hasSkel) strokeVectors(ctx, SKEL_COLOR);
   } else if (S.mode === "clean") {
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, ew, eh);
+    fillBg("#ffffff");
     if (S.hasSkel) strokeVectors(ctx, "#000000");
   }
 
@@ -520,7 +565,7 @@ function undo() {
   const cur = ctx2.getImageData(e.x, e.y, e.w, e.h);
   ctx2.putImageData(e.data, e.x, e.y);
   S.redoStack.push({ x: e.x, y: e.y, w: e.w, h: e.h, data: cur, layer: e.layer });
-  markLayerDirty(e.layer);
+  markLayerDirty(e.layer, { x: e.x, y: e.y, w: e.w, h: e.h });
   clearSelection();
   updateEditButtons();
   requestDraw();
@@ -534,7 +579,7 @@ function redo() {
   ctx2.putImageData(e.data, e.x, e.y);
   S.history.push({ x: e.x, y: e.y, w: e.w, h: e.h, data: cur, layer: e.layer });
   S.historyBytes += cur.data.length;
-  markLayerDirty(e.layer);
+  markLayerDirty(e.layer, { x: e.x, y: e.y, w: e.w, h: e.h });
   S.dirty = true;
   clearSelection();
   updateEditButtons();
@@ -609,7 +654,11 @@ function strokeSegment(x0, y0, x1, y1) {
   m.restore();
   st.minX = Math.min(st.minX, x0, x1); st.maxX = Math.max(st.maxX, x0, x1);
   st.minY = Math.min(st.minY, y0, y1); st.maxY = Math.max(st.maxY, y0, y1);
-  markLayerDirty(st.layer);
+  const pad = size / 2 + 2;
+  markLayerDirty(st.layer, {
+    x: Math.min(x0, x1) - pad, y: Math.min(y0, y1) - pad,
+    w: Math.abs(x1 - x0) + 2 * pad, h: Math.abs(y1 - y0) + 2 * pad,
+  });
 }
 
 function strokeEnd() {
@@ -1416,6 +1465,7 @@ function endPointer(e) {
   if (S.nodeMarquee) marqueeFinish();
   if (S.samDragStart) samFinishDrag(e);
   requestDraw();
+  maybeSwitchEditView();   // a pan may have moved off the loaded window
 }
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
@@ -1652,6 +1702,14 @@ function resetEditState() {
 async function loadPhoto(keepView = false) {
   const { bitmap } = await fetchBitmap("/api/image/photo.jpg");
   S.photo = bitmap;
+  if (!keepView) {
+    // Small whole-photo backdrop, fetched once per image and reused under
+    // every edit window (cached server-side, so this is cheap).
+    if (S.overview) { S.overview.close(); S.overview = null; }
+    fetchBitmap("/api/image/overview.jpg")
+      .then(({ bitmap: bm }) => { S.overview = bm; requestDraw(); })
+      .catch(() => { /* backdrop is a nicety, not a requirement */ });
+  }
   $("#emptystate").style.display = "none";
   setupMaskCanvases(S.edit.width, S.edit.height);
   S.hasMask = false;
@@ -1663,7 +1721,9 @@ async function loadPhoto(keepView = false) {
   }
 }
 
-async function loadMaskAndSkeleton() {
+/* Just the raster mask for the current window (and the diff basis it arms
+ * on the server) — the centerlines are handled by the caller. */
+async function loadMaskOnly() {
   const m = await fetchBitmap("/api/image/mask.png");
   S.maskVersion = parseInt(m.headers.get("X-Mask-Version") || "-1", 10);
   S.maskCtx.clearRect(0, 0, S.mask.width, S.mask.height);
@@ -1671,6 +1731,10 @@ async function loadMaskAndSkeleton() {
   m.bitmap.close();
   S.hasMask = true;
   S.tintDirty = true;
+}
+
+async function loadMaskAndSkeleton() {
+  await loadMaskOnly();
   try {
     const vec = await apiGet("/api/vectors");
     S.vectors = vec.polylines;
@@ -1719,11 +1783,30 @@ async function setEditView(rect) {
   S.viewBusy = true;
   const a = detailRatio();
   const b = S.view.tx - S.edit.x * a, b2 = S.view.ty - S.edit.y * a;
+  const old = { x: S.edit.x, y: S.edit.y, s: S.edit.scale };
+  const carried = S.vectors;     // setupMaskCanvases() clears these
   try {
     const sum = await apiPost("/api/edit_view", rect || { whole: true });
     applySummary(sum);
     await loadPhoto(true);
-    if (sum.has_result) await loadMaskAndSkeleton();
+    if (sum.has_result) {
+      // The polylines are the same geometry in a different frame — re-project
+      // them here instead of re-downloading half a megabyte of JSON.
+      if (carried) {
+        const n = S.edit;
+        S.vectors = carried.map((line) => line.map(([x, y]) => [
+          (x / old.s + old.x - n.x) * n.scale,
+          (y / old.s + old.y - n.y) * n.scale,
+        ]));
+        rebuildVectorPaths();
+        renderSkelCanvas();
+        S.hasSkel = true;
+        S.skelTint = null;
+        await loadMaskOnly();
+      } else {
+        await loadMaskAndSkeleton();
+      }
+    }
     S.view.k = a / S.edit.scale;
     S.view.tx = b + S.edit.x * a;
     S.view.ty = b2 + S.edit.y * a;
@@ -1742,9 +1825,11 @@ async function setEditView(rect) {
  * only in the browser canvas and would be lost. */
 const VIEW_MARGIN = 1.25;        // load a bit more than is visible, for panning
 const VIEW_MAX = 4096;           // must match MAX_EDIT_DIM on the server
-const VIEW_MIN = 1536;           // never load a window barely bigger than the view
+const VIEW_MIN = 3072;           // never load a window barely bigger than the view
 function maybeSwitchEditView() {
   if (!S.photo || !S.image || S.viewBusy || S.busy) return;
+  // Not while a gesture is in progress — the swap rebuilds the canvases.
+  if (S.stroke || S.pan || S.nodeDrag || S.nodeMarquee || S.vecErase || S.vecPen) return;
   const windowed = S.edit.full_width < S.image.width || S.edit.full_height < S.image.height;
   // Hysteresis: hand over the full-res window at native detail, take it back
   // as soon as the user zooms out below it — a window covers only part of the

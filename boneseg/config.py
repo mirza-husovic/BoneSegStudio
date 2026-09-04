@@ -100,6 +100,9 @@ class PostprocessSettings:
     # Skeletonization
     prune_branch_px: int = 20       # remove terminal skeleton branches shorter than this
     min_skeleton_px: int = 40       # remove isolated skeleton fragments shorter than this
+    # "skeletonize" (Zhang-Suen thinning, ~7x faster on a 65 MP grave) or
+    # "medial_axis" (the original). Measured 0.2 px apart on real data.
+    skeleton_algo: str = "skeletonize"
 
     # Centerline spline smoothing (identical to predict.py)
     spline_smooth: float = 100.0    # lower bound for splprep's `s`

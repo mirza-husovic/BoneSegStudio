@@ -102,7 +102,7 @@ class PostprocessSettings:
     min_skeleton_px: int = 40       # remove isolated skeleton fragments shorter than this
 
     # Centerline spline smoothing (identical to predict.py)
-    spline_smooth: float = 200.0    # lower bound for splprep's `s`
+    spline_smooth: float = 100.0    # lower bound for splprep's `s`
     spline_density: int = 4         # resampled points per input point
     spline_downsample: int = 5      # keep every Kth medial-axis point pre-fit
 

@@ -250,7 +250,7 @@ def auto_assign_gcps(
         area = abs((b[0] - a[0]) * (d[1] - a[1]) - (d[0] - a[0]) * (b[1] - a[1]))
         if area > best_area:
             best_area, seed = area, tri
-    span = float(max(c[:, 0].ptp(), c[:, 1].ptp())) or 1.0
+    span = float(max(np.ptp(c[:, 0]), np.ptp(c[:, 1]))) or 1.0
     if best_area < 1e-4 * span * span:
         raise ValueError("The clicked points are (nearly) collinear — "
                          "spread them across the photo.")

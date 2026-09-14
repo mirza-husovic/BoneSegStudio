@@ -3,8 +3,8 @@
 [![CI](https://github.com/mirza-husovic/BoneSegStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mirza-husovic/BoneSegStudio/actions/workflows/ci.yml)
 
 A fully-offline desktop application for **archaeological bone
-segmentation, skeletonization and vectorization**. It wraps the trained
-`model367b3` UNet (EfficientNet-B3) in a fast local web interface
+segmentation, skeletonization and vectorization**. It wraps a trained
+production UNet (EfficientNet-B3) in a fast local web interface
 (FastAPI backend + hand-written Canvas 2D frontend): load an orthophoto or grave photo, run inference, inspect
 the mask / overlay / skeleton, paint corrections with full undo/redo,
 tune the postprocessing live, and export vectors for your drawing workflow.
@@ -40,7 +40,7 @@ the whole path from photograph to vector drawing.
 the original photo, the red skeleton over the photo, and the clean vector
 line drawing.*
 
-**No manual editing** — every line above is raw `model367b3` output on a
+**No manual editing** — every line above is raw model output on a
 held-out grave at default settings, captured live from the running app.
 
 <p align="center">
@@ -218,12 +218,9 @@ BoneSegStudio/
 pipeline (`inference`, `data`, `postprocessing`, `pipeline`) is usable
 headless from scripts and notebooks — see `tests/smoke_test.py`.
 
-**Why no Gradio?** The Gradio ImageEditor (WebGL-based) crashed to a white
-screen when switching brush/eraser on large photos and lost all edits, and
-its canvas had no reliable mouse panning. The current frontend is ~600 lines
-of dependency-free JavaScript on a 2D canvas: pan/zoom always available,
-stroke-level undo/redo, one-click component selection, and mask edits are
-applied to the full-resolution mask as a sparse diff.
+The frontend is ~600 lines of dependency-free JavaScript on a 2D canvas:
+pan/zoom always available, stroke-level undo/redo, one-click component
+selection, and mask edits applied to the full-resolution mask as a sparse diff.
 
 ---
 
@@ -245,12 +242,15 @@ flowchart TD
     K --> L["CAD / GIS tools"]
 ```
 
-- **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters
-  (`model367b3`, trained on 367 annotated grave photographs).
-- **Weights:** not included in this repository (large binary + tied to
-  unpublished training data). Point the app at a local checkpoint via the
-  `BONESEG_MODEL_PATH` environment variable, or the default
-  `models/model367b3/best_bone_model.pth` (see `boneseg/config.py`).
+- **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters —
+  the production model, trained full-frame on 393 annotated grave photographs
+  from 9 excavation sites. Several other trained variants ship in the model
+  registry and can be selected from the UI dropdown.
+- **Weights:** not included in this repository (large binaries tied to
+  unpublished training data). The active model is set by `model_key` in
+  `boneseg/config.py`; each registered model loads its checkpoint from
+  `models/<key>/best_bone_model.pth`, and `BONESEG_MODEL_PATH` can override
+  the path.
 - **Inference:** reflect-padded sliding window (patch 512, stride 256),
   sigmoid probabilities averaged over overlaps; optional 4-way flip TTA.
 - **Postprocessing:** threshold (default 0.5) → remove small components →
@@ -348,8 +348,8 @@ The architecture was designed so this slots in with minimal refactoring:
 
 Research tool developed as part of a personal project on automatic
 vectorization of archaeological finds. It is built around a U-Net
-(EfficientNet-B3 encoder, `model367b3`) trained on a curated dataset of
-excavation photo / bone-outline pairs.
+(EfficientNet-B3 encoder) trained on a curated dataset of excavation photo /
+bone-outline pairs from 9 sites.
 
 The trained weights and all archaeological source data (photographs, drawings,
 survey coordinates) are **not** included in this repository — the code is the

@@ -19,13 +19,14 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 
-# Trained weights live OUTSIDE the repo (they are large binaries). Point the
-# app at them with the BONESEG_MODEL_PATH environment variable, or drop the
-# checkpoint at the default location below.
+# Trained weights live OUTSIDE the repo (they are large binaries) and are
+# downloaded from the releases page. Point the app at them with the
+# BONESEG_MODEL_PATH environment variable, or drop the checkpoint at the
+# default location below.
 DEFAULT_MODEL_PATH: Path = Path(
     os.environ.get(
         "BONESEG_MODEL_PATH",
-        str(PROJECT_ROOT / "models" / "model367b3" / "best_bone_model.pth"),
+        str(PROJECT_ROOT / "models" / "final7" / "best_bone_model.pth"),
     )
 )
 

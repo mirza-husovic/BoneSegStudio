@@ -4,14 +4,14 @@
 
 A fully-offline desktop application for **archaeological bone
 segmentation, skeletonization and vectorization**. It wraps a trained
-production UNet (EfficientNet-B3) in a fast local web interface
-(FastAPI backend + hand-written Canvas 2D frontend): load an orthophoto or grave photo, run inference, inspect
+production UNet (EfficientNet-B3) in a fast local web interface: load an
+orthophoto or grave photo, run inference, inspect
 the mask / overlay / skeleton, paint corrections with full undo/redo,
 tune the postprocessing live, and export vectors for your drawing workflow.
 
-Everything runs locally on Windows with a single `python app.py` — **no cloud,
-no external APIs**. An optional `Dockerfile` is included for containerized
-deployment; the model weights stay outside the image and are mounted at runtime.
+Everything runs locally on Windows with a single `python app.py`. An optional
+`Dockerfile` is included for containerized deployment; the model weights stay
+outside the image and are mounted at runtime.
 
 ![BoneSeg Studio — excavation photograph to vector bone drawing](docs/demo.png)
 
@@ -259,19 +259,16 @@ flowchart TD
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters —
   the production model, trained full-frame on the FINAL7 dataset (424 annotated
-  grave photographs from nine excavation sites in Croatia and Mexico,
-  group-split with a pixel-hash leakage check). On held-out graves (scored within 50 px of the annotated
+  grave photographs from nine excavation sites, group-split with a pixel-hash
+  leakage check). On held-out graves (scored within 50 px of the annotated
   skeleton): Dice 0.58, and F1 0.81 / 0.86 when a 3 px / 5 px positional
   tolerance is allowed (outlines are ~6 px wide, so
-  plain Dice heavily penalizes lines shifted by a pixel or two). Several other
-  trained variants ship in the model registry and can be selected from the UI
-  dropdown.
+  plain Dice heavily penalizes lines shifted by a pixel or two).
 - **Weights:** published as a [release asset](https://github.com/mirza-husovic/BoneSegStudio/releases/latest)
   rather than committed to the repository. The active model is set by
-  `model_key` in `boneseg/config.py`; each registered model loads its
-  checkpoint from `models/<key>/best_bone_model.pth`, and `BONESEG_MODEL_PATH`
-  can override the path. The other registered variants were training
-  experiments and are not published.
+  `model_key` in `boneseg/config.py`; a registered model loads its checkpoint
+  from `models/<key>/best_bone_model.pth`, and `BONESEG_MODEL_PATH` can
+  override the path.
 - **Inference:** reflect-padded sliding window (patch 512, stride 256),
   sigmoid probabilities averaged over overlaps; optional 4-way flip TTA.
 - **Postprocessing:** threshold (default 0.5) → remove small components →

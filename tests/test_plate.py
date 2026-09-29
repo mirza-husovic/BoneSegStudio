@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory() as td:
 
     p1 = save_plate_pdf(img, mask, polys, georef, out / "plate_geo.pdf",
                         label="GROB 12", site="Test site", note="nota",
-                        model_name="model367b3")
+                        model_name="final7")
     assert p1 is not None and p1.stat().st_size > 10_000
     print(f"geo plate OK ({p1.stat().st_size} bytes)")
 

@@ -52,8 +52,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
             "Production bone-outline model. UNet with an EfficientNet-B3 "
             "encoder, trained full frame on 424 annotated grave photographs "
             "from nine excavation sites, patch 512 / stride 256, BCE+Dice. "
-            "The dataset is split by group and checked for duplicate "
-            "photographs across the splits. On held-out graves, scored within "
+            "On held-out graves, scored within "
             "50 px of the annotated skeleton: Dice 0.58, F1 0.81 with a 3 px "
             "positional tolerance and 0.86 with 5 px."
         ),

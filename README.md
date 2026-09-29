@@ -259,8 +259,8 @@ flowchart TD
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters —
   the production model, trained full-frame on the FINAL7 dataset (424 annotated
-  grave photographs from nine excavation sites, group-split with a pixel-hash
-  leakage check). On held-out graves (scored within 50 px of the annotated
+  grave photographs from nine excavation sites, with photographs of the same
+  grave kept together in one split). On held-out graves (scored within 50 px of the annotated
   skeleton): Dice 0.58, and F1 0.81 / 0.86 when a 3 px / 5 px positional
   tolerance is allowed (outlines are ~6 px wide, so
   plain Dice heavily penalizes lines shifted by a pixel or two).

@@ -31,8 +31,8 @@ jobs:
           pip install -r requirements.txt
 
       # Weight-free unit tests only: GCP parsing, georeferencing math, DXF and
-      # catalog-plate export. The smoke test needs the private model checkpoint
-      # (never committed) so it is run locally, not here.
+      # catalog-plate export. The smoke test needs the model checkpoint, which
+      # ships as a release asset rather than in the repo, so it is run locally.
       - name: Run unit tests
         run: |
           python tests/test_gcp_parse.py

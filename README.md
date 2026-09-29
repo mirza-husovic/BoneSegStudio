@@ -114,6 +114,21 @@ pip install -r requirements.txt
 > The app auto-detects the absence of CUDA and runs on CPU — no code change
 > needed.
 
+### 4. Download the model weights
+
+The trained weights are not stored in the repository (53 MB binary). Download
+`best_bone_model.pth` from the
+[latest release](https://github.com/mirza-husovic/BoneSegStudio/releases/latest)
+and put it in `models/final7/`:
+
+```powershell
+mkdir models\final7
+curl.exe -L -o models\final7\best_bone_model.pth https://github.com/mirza-husovic/BoneSegStudio/releases/latest/download/best_bone_model.pth
+```
+
+That is the production model the app loads by default. See
+[License](#license) for the terms the weights are released under.
+
 ---
 
 ## Running the application
@@ -243,14 +258,20 @@ flowchart TD
 ```
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters —
-  the production model, trained full-frame on 393 annotated grave photographs
-  from 9 excavation sites. Several other trained variants ship in the model
-  registry and can be selected from the UI dropdown.
-- **Weights:** not included in this repository (large binaries tied to
-  unpublished training data). The active model is set by `model_key` in
-  `boneseg/config.py`; each registered model loads its checkpoint from
-  `models/<key>/best_bone_model.pth`, and `BONESEG_MODEL_PATH` can override
-  the path.
+  the production model, trained full-frame on the FINAL7 dataset (424 annotated
+  grave photographs from nine excavation sites in Croatia and Mexico,
+  group-split with a pixel-hash leakage check). On held-out graves (scored within 50 px of the annotated
+  skeleton): Dice 0.58, and F1 0.81 / 0.86 when a 3 px / 5 px positional
+  tolerance is allowed (outlines are ~6 px wide, so
+  plain Dice heavily penalizes lines shifted by a pixel or two). Several other
+  trained variants ship in the model registry and can be selected from the UI
+  dropdown.
+- **Weights:** published as a [release asset](https://github.com/mirza-husovic/BoneSegStudio/releases/latest)
+  rather than committed to the repository. The active model is set by
+  `model_key` in `boneseg/config.py`; each registered model loads its
+  checkpoint from `models/<key>/best_bone_model.pth`, and `BONESEG_MODEL_PATH`
+  can override the path. The other registered variants were training
+  experiments and are not published.
 - **Inference:** reflect-padded sliding window (patch 512, stride 256),
   sigmoid probabilities averaged over overlaps; optional 4-way flip TTA.
 - **Postprocessing:** threshold (default 0.5) → remove small components →
@@ -351,16 +372,22 @@ vectorization of archaeological finds. It is built around a U-Net
 (EfficientNet-B3 encoder) trained on a curated dataset of excavation photo /
 bone-outline pairs from 9 sites.
 
-The trained weights and all archaeological source data (photographs, drawings,
-survey coordinates) are **not** included in this repository — the code is the
-shared artifact. The demo images above use a photograph the model was never
+The trained weights are published as a release asset so the application can be
+run as it is. The archaeological source data behind them (photographs,
+drawings, survey coordinates) belongs to the excavating institutions and is
+**not** shared here. The demo images above use a photograph the model was never
 trained on.
 
 ---
 
 ## License
 
-Released under the [MIT License](LICENSE) — free to use, modify and distribute
-with attribution. The license covers the **code only**; the trained weights and
-archaeological source data are not part of this repository and are not licensed
-here.
+The **code** is released under the [MIT License](LICENSE) — free to use, modify
+and distribute with attribution.
+
+The **trained weights** distributed with the releases are made available for
+research and other non-commercial use, with attribution to this repository.
+They were trained on excavation data provided by partner institutions, which is
+why they carry a narrower permission than the code. For commercial use, please
+get in touch. The archaeological source data itself is not part of this
+repository and is not licensed here.

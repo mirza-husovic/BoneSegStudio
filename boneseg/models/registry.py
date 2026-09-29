@@ -85,19 +85,53 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
             "razdvaja li kraljeske i zatvara li konture)."
         ),
     ),
+    "final7": ModelSpec(
+        key="final7",
+        display_name="final7 — UNet EffNet-B3 (FINAL7: bez curenja, +Palenque, full-frame) [PRODUCTION]",
+        family="smp-unet",
+        weights_path=PROJECT_ROOT / "models" / "final7" / "best_bone_model.pth",
+        encoder="efficientnet-b3",
+        description=(
+            "PRODUKCIJSKI model (od 2026-09-22). Isti recept kao final5, treniran od "
+            "nule na UNET_DATASET_FINAL7 (424 slike, group split + pixel-hash provjera "
+            "curenja, +9 Palenque), best epoha 10/35 po cistoj validaciji. "
+            "Eval na 33 test slike koje final5 nikad nije vidio (micro TTA, ROI-d50): "
+            "Dice 0.584 vs final5 0.579; F1 uz toleranciju 3 px 0.808, 5 px 0.861. "
+            "Na novim grobovima jednak ili mrvicu bolji od final5, a treniran bez curenja."
+        ),
+    ),
+    "final5": ModelSpec(
+        key="final5",
+        display_name="final5 — UNet EffNet-B3 (FINAL5: +Sv.Teodor, full-frame) [prethodna produkcija]",
+        family="smp-unet",
+        weights_path=PROJECT_ROOT / "models" / "final5" / "best_bone_model.pth",
+        encoder="efficientnet-b3",
+        description=(
+            "Prethodni produkcijski model (2026-09-18 -> 2026-09-22, zamijenjen s "
+            "'final7'). NAPOMENA: FINAL5 splitovi su imali curenje (BC24/BC25 iste "
+            "fotke), pa su donje test brojke napuhane. Isti recept kao colab_final4jana, "
+            "ali treniran na UNET_DATASET_FINAL5 (430 slika: FINAL4 + Jana + nova "
+            "lokacija Sv. Teodor), pun kadar, best epoha 67/93. "
+            "Eval (FINAL5 test, 36 img, micro TTA): std Dice 0.604 / ROI-d50 0.634. "
+            "Na usporedivom test setu na razini ili mrvicu iznad prethodne produkcije "
+            "(colab, final4-only 0.634) i najbolji full-frame po standard Diceu; "
+            "dobro pokriva novu lokaciju Sv. Teodor (ROI-d50 0.706). Usko grlo ostaje "
+            "rokovacke_zidine (ROI-d50 0.549)."
+        ),
+    ),
     "colab_final4jana": ModelSpec(
         key="colab_final4jana",
-        display_name="colab — UNet EffNet-B3 (FINAL4+Jana, full-frame) [PRODUCTION]",
+        display_name="colab — UNet EffNet-B3 (FINAL4+Jana, full-frame) [prethodna produkcija]",
         family="smp-unet",
         weights_path=PROJECT_ROOT / "models" / "colab_final4jana" / "best_bone_model.pth",
         encoder="efficientnet-b3",
         description=(
-            "PRODUKCIJSKI model. Isti recept kao model367b3, ali treniran na "
+            "Prethodni produkcijski model (do 2026-09-18, zamijenjen s 'final5'). "
+            "Isti recept kao model367b3, ali treniran na "
             "FINAL4 + Jana (pun kadar, bez cropa). Radi ispravno na punom kadru i "
             "generalizira na Janu koju model367b3 nikad nije vidio. "
             "Eval (pun kadar, TTA): final4 std Dice 0.599 / ROI-d50 0.634; "
-            "jana std Dice 0.773; svih 40 std 0.618 / ROI-d50 0.650 (najbolji "
-            "ukupni ROI-d50 od svih modela)."
+            "jana std Dice 0.773; svih 40 std 0.618 / ROI-d50 0.650."
         ),
     ),
     "resnet34": ModelSpec(

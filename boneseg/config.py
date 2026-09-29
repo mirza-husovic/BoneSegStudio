@@ -145,7 +145,7 @@ class ExportSettings:
 class AppConfig:
     """Top-level bundle handed to the pipeline and the UI."""
 
-    model_key: str = "colab_final4jana"   # production: FINAL4+Jana, full-frame
+    model_key: str = "final7"   # production (2026-09-22): FINAL7, leak-free group split, full-frame
     inference: InferenceSettings = field(default_factory=InferenceSettings)
     postprocess: PostprocessSettings = field(default_factory=PostprocessSettings)
     display: DisplaySettings = field(default_factory=DisplaySettings)

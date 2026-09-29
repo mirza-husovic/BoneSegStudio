@@ -384,8 +384,9 @@ and archaeologists who produced it. That data is not distributed with this
 repository and remains theirs.
 
 Thanks to the **Croatian Conservation Institute** for the excavation
-photographs and drawings that make up most of the training set, and to
-**Dr. Mirko De Tomassi** for sharing documentation from his own excavations.
+photographs and drawings that make up most of the training set, to
+**Geoarheo d.o.o.** for documentation from their own projects, and to
+**Dr. Mirko De Tomassi** for sharing material from his fieldwork.
 
 ---
 

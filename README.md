@@ -377,6 +377,18 @@ trained on.
 
 ---
 
+## Acknowledgements
+
+The model was trained on excavation documentation shared by the institutions
+and archaeologists who produced it. That data is not distributed with this
+repository and remains theirs.
+
+Thanks to the **Croatian Conservation Institute** for the excavation
+photographs and drawings that make up most of the training set, and to
+**Dr. Mirko De Tomassi** for sharing documentation from his own excavations.
+
+---
+
 ## License
 
 The **code** is released under the [MIT License](LICENSE) — free to use, modify

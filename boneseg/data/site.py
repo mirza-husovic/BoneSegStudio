@@ -713,6 +713,11 @@ def scan_site(sources: list[str], vec_dir: str | None = None, recursive: bool = 
                 if d > MAX_SPREAD_M:
                     g["notes"].append(f"{d / 1000:.1f} km from the rest of the site — "
                                       "wrong points / EPSG, or another site?")
+    for g in graves:
+        if "_centre" in g and g["crs"]:
+            note = _area_check(g["crs"], *g["_raw"])
+            if note:
+                g["notes"].insert(0, note)
     frame = _Frame(mode, origin)
 
     out = []
@@ -744,6 +749,29 @@ def scan_site(sources: list[str], vec_dir: str | None = None, recursive: bool = 
                 len(out), sum(1 for g in out if g["georeferenced"]), mode, site_crs)
     return {"graves": out, "mode": mode, "crs": site_crs, "origin": list(origin),
             "problems": problems}
+
+
+def _area_check(crs: str, x: float, y: float) -> str | None:
+    """Warn when a grave lies outside the area its CRS is made for — the
+    sign of numbers recorded in one system and labelled as another."""
+    try:
+        from pyproj import CRS
+        from boneseg.data.crs_guess import TM0_NAME, tm0_to_htrs96
+        area = CRS.from_user_input(crs).area_of_use
+        (lon,), (lat,) = _transform_xy(crs, "EPSG:4326", [x], [y])
+    except Exception:
+        return None
+    if area is None:
+        return None
+    w, s_, e, n = area.bounds
+    if w - 1 <= lon <= e + 1 and s_ - 1 <= lat <= n + 1:
+        return None
+    msg = (f"lands at {lat:.2f}°N {lon:.2f}°E — outside the area of {crs} "
+           f"({area.name}): the points are not in {crs}")
+    if tm0_to_htrs96([{"e": x, "n": y}]) is not None:
+        msg += (f"; they look like a {TM0_NAME} — reload the point file in the "
+                "GCP tool (it converts them now) and apply the GCPs again")
+    return msg
 
 
 def _guess_epsg(x: float, y: float) -> str | None:

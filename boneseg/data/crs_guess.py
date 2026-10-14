@@ -98,6 +98,42 @@ def guess_crs(points: list[dict]) -> dict:
              "candidates": passed}
 
 
+# A GNSS controller left without a projection set often records in a bare
+# Transverse Mercator: central meridian 0 deg (Greenwich), scale 1, no false
+# easting. In Croatia that gives eastings of ~1.2-1.6 million — outside every
+# real national grid, so HTRS96/TM-labelled points land in Romania/Ukraine.
+# Found on Rudina 2020 (E 1 366 377, N 5 178 740 = HTRS96 574 803, 5 028 182,
+# 13 m from the Rudina 2021 graves surveyed properly in HTRS96).
+TM0_PROJ = "+proj=tmerc +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs"
+TM0_NAME = "bare Transverse Mercator, central meridian 0° (GNSS default)"
+
+
+def tm0_to_htrs96(points: list[dict]) -> list[dict] | None:
+    """If the raw E/N are bare-TM-0° numbers that land in the region,
+    return copies converted to HTRS96/TM (EPSG:3765); else None.
+
+    Only tried when no real CRS candidate matched — the TM-0° numbers do
+    not overlap any national grid in the region, so this never overrides
+    a correct guess."""
+    if not points or not HAS_RASTERIO:
+        return None
+    e0 = _median([p["e"] for p in points])
+    n0 = _median([p["n"] for p in points])
+    if not (1_000_000 <= e0 <= 2_000_000 and 4_500_000 <= n0 <= 5_300_000):
+        return None
+    try:
+        lons, lats = warp_transform(TM0_PROJ, "EPSG:4326", [e0], [n0])
+    except Exception:
+        return None
+    if not (_REGION_LON[0] <= lons[0] <= _REGION_LON[1]
+            and _REGION_LAT[0] <= lats[0] <= _REGION_LAT[1]):
+        return None
+    xs, ys = warp_transform(TM0_PROJ, "EPSG:3765", [p["e"] for p in points],
+                            [p["n"] for p in points])
+    return [{**p, "e": round(x, 4), "n": round(y, 4), "e_raw": p["e"], "n_raw": p["n"]}
+            for p, x, y in zip(points, xs, ys)]
+
+
 def region_check(epsg: int | None, e: float, n: float) -> str | None:
     """Sanity-check a FITTED georeference (called at Apply time, not just at
     load time): reproject the world coordinate to WGS84 and warn when it

@@ -1224,9 +1224,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if not pts:
             raise HTTPException(400, "No points recognized — expected "
                                      "“ID E N [Z]” per line/row.")
+        guess = guess_crs(pts)
+        converted = None
+        if not guess.get("epsg"):
+            from boneseg.data.crs_guess import TM0_NAME, tm0_to_htrs96
+            tm0 = tm0_to_htrs96(pts)
+            if tm0 is not None:
+                pts, converted = tm0, TM0_NAME
+                guess = guess_crs(pts)
         return {"points": pts, "n": len(pts),
                 "lonlat_warning": looks_like_lonlat(pts),
-                "crs_guess": guess_crs(pts)}
+                "crs_guess": guess, "converted_from": converted}
 
     @app.post("/api/georef")
     async def georef_apply(payload: dict = Body(...)):

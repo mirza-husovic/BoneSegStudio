@@ -388,7 +388,11 @@
       }
       const cur = items.find((it) => it.g.current);
       if (opt.focusCurrent && cur) { zoomTo([cur]); if (cur.frame) cur.frame.openPopup(); }
-      else if ((opt.fit || fresh) && placed.length) zoomTo(placed);
+      else if ((opt.fit || fresh) && placed.length) {
+        // Strays (km away: wrong points / EPSG) would zoom out to a continent.
+        const near = placed.filter((it) => it.g.dist_m == null || it.g.dist_m <= 2000);
+        zoomTo(near.length ? near : placed);
+      }
       if (opt.focusCurrent && cur && placed.length === 1) {
         toast("Only the editor grave is on the map — add the other graves of the site to compare.", "", 7000);
       }
@@ -409,7 +413,11 @@
   $("#siteopacity").addEventListener("input", (e) => {
     for (const it of items) if (it.photo) it.photo.setOpacity(+e.target.value);
   });
-  $("#sitefit").addEventListener("click", () => zoomTo(items.filter((it) => it.visible)));
+  $("#sitefit").addEventListener("click", () => {
+    const vis = items.filter((it) => it.visible);
+    const near = vis.filter((it) => it.g.dist_m == null || it.g.dist_m <= 2000);
+    zoomTo(near.length ? near : vis);
+  });
   $("#siteall").addEventListener("click", () => {
     const anyOff = items.some((it) => it.g.georeferenced && !it.visible);
     items.forEach((it) => { if (it.g.georeferenced) it.visible = anyOff; });

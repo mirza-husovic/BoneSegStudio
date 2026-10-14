@@ -2196,6 +2196,14 @@ async function gcpLoadPoints(formData) {
           "error", 12000);
   }
   applyCrsGuess(res.crs_guess);
+  if (res.converted_from) {
+    $("#gcpepsg").value = "3765";
+    $("#gcpswap").checked = false;
+    $("#gcpcrsguess").textContent = `⚠ These points were recorded in a ${res.converted_from}, ` +
+      "not in a national grid — converted to HTRS96/TM (EPSG:3765). Check the result on the map.";
+    $("#gcpcrsguess").className = "hint bad";
+    toast("Points were in the GNSS default projection (TM 0°) — converted to HTRS96/TM.", "", 12000);
+  }
   toast(`${res.n} point(s) loaded — click them on the photo in ANY order.`, "ok", 7000);
 }
 

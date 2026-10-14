@@ -233,3 +233,7 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; }
 .sitesrc span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .siterow.cur a { color: #ff6b6b; font-weight: 600; }
 .leaflet-tooltip.sitelabel.current { background: rgba(220, 38, 38, .9); }
+/* The side panel scrolls as a whole — never squash a section (the grave
+   list used to collapse to a 2 px strip on short windows). */
+#siteside > * { flex-shrink: 0; }
+#sitelist { min-height: 60px; resize: vertical; }

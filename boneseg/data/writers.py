@@ -64,7 +64,9 @@ def save_mask_raster(mask01: np.ndarray, stem_path: Path, georef: GeoRef | None)
             transform, k, out_w, out_h = rectify_params(georef, w, h)
             mask255 = cv2.warpPerspective(mask255, k, (out_w, out_h),
                                           flags=cv2.INTER_NEAREST)
-        out = stem_path.with_suffix(".tif")
+        # Append, not with_suffix(): a stem ending in "." ("Gr.41 a.k.") would
+        # turn "<stem>_mask" into "<stem>.tif".
+        out = Path(f"{stem_path}.tif")
         with rasterio.open(
             str(out), "w",
             driver="GTiff",
@@ -78,7 +80,7 @@ def save_mask_raster(mask01: np.ndarray, stem_path: Path, georef: GeoRef | None)
         ) as dst:
             dst.write(mask255, 1)
         return out
-    out = stem_path.with_suffix(".png")
+    out = Path(f"{stem_path}.png")
     Image.fromarray(mask255).save(out)
     return out
 

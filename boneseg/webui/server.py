@@ -1106,52 +1106,93 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     # Plain ``def`` endpoints: FastAPI runs them in its thread pool, so a
     # folder scan or a photo warp never blocks the editor's requests. They
     # read files only and never touch the Studio state, hence no lock.
+    def _current_grave() -> dict | None:
+        """The editor's grave for the site view — straight from memory, so a
+        fresh georeference shows on the map before anything is exported."""
+        if state.image is None or state.georef is None or state.source_path is None:
+            return None
+        rings, lines = [], []
+        if state.result is not None and state.result.georef is not None:
+            rings = [list(map(tuple, r)) for r in state.result.rings()]
+            lines = [list(map(tuple, l)) for l in state.result.polylines_out]
+        return {"name": state.source_path.stem, "stem": state.source_path.stem,
+                "photo": str(state.source_path), "image": state.image,
+                "georef": state.georef, "rings": rings, "lines": lines,
+                "key": (str(state.source_path), id(state.georef))}
+
+    def _current_locked() -> dict | None:
+        if not state.lock.acquire(timeout=5.0):
+            raise HTTPException(409, "Server is busy (inference or batch is running).")
+        try:
+            return _current_grave()
+        finally:
+            state.lock.release()
+
     @app.post("/api/site/scan")
     def site_scan(payload: dict = Body(...)):
         from boneseg.data.site import scan_site
-        photo_dir = str(payload.get("photo_dir", "")).strip().strip('"')
-        vec_dir = str(payload.get("vec_dir", "")).strip().strip('"')
-        if photo_dir and not Path(photo_dir).is_dir():
-            raise HTTPException(400, f"Photo folder does not exist: {photo_dir}")
+        sources = [str(x) for x in payload.get("sources") or [] if str(x).strip()]
+        vec_dir = str(payload.get("vec_dir", "")).strip().strip('"') or None
         if vec_dir and not Path(vec_dir).is_dir():
-            raise HTTPException(400, f"Export folder does not exist: {vec_dir}")
-        if not photo_dir and not vec_dir:
-            raise HTTPException(400, "Give the photo folder and/or the export folder.")
-        vo = payload.get("vector_only")
-        return scan_site(photo_dir, vec_dir, bool(payload.get("recursive", True)),
-                         None if vo is None else bool(vo))
+            vec_dir = None
+        cur = _current_locked() if payload.get("current") else None
+        if payload.get("current") and cur is None and not sources:
+            raise HTTPException(400, "The photo in the editor is not georeferenced yet "
+                                     "— set its GCPs first (G).")
+        if not sources and cur is None:
+            raise HTTPException(400, "Add graves first (photos, export folders or files).")
+        res = scan_site(sources, vec_dir, bool(payload.get("recursive", True)), cur)
+        res["current_georef"] = cur is not None
+        return res
 
-    @app.get("/api/site/photo")
-    def site_photo(path: str, mode: str = "map", ox: float = 0.0, oy: float = 0.0,
-                   crs: str = "", size: int = 2048):
+    @app.post("/api/site/photo")
+    def site_photo(payload: dict = Body(...)):
         from boneseg.data.site import render_photo
+        g = payload.get("grave") or {}
+        cur = _current_locked() if g.get("current") else None
         try:
-            data = render_photo(path, mode, (ox, oy), crs or None,
-                                max_dim=max(256, min(int(size), 4096)))
+            data, _bounds = render_photo(g, str(payload.get("mode", "map")),
+                                         tuple(payload.get("origin") or (0.0, 0.0)), cur)
         except FileNotFoundError:
-            raise HTTPException(404, f"Photo not found: {path}")
+            raise HTTPException(404, f"Photo not found: {g.get('photo')}")
         except Exception as exc:
-            logger.exception("Site photo render failed: %s", path)
+            logger.exception("Site photo render failed: %s", g.get("photo"))
             raise HTTPException(400, f"Could not render photo: {exc}")
-        return Response(data, media_type="image/webp",
-                        headers={"Cache-Control": "private, max-age=3600"})
+        return Response(data, media_type="image/webp")
 
-    @app.post("/api/site/export_dxf")
-    def site_export_dxf(payload: dict = Body(...)):
-        from boneseg.data.site import export_site_dxf
-        out = str(payload.get("out_path", "")).strip().strip('"')
+    @app.post("/api/site/export")
+    def site_export(payload: dict = Body(...)):
+        from boneseg.data.site import export_site
+        out = str(payload.get("out_base", "")).strip().strip('"')
         if not out:
-            raise HTTPException(400, "Give the output DXF path.")
-        if not out.lower().endswith(".dxf"):
-            out += ".dxf"
+            raise HTTPException(400, "Choose where to save the site plan.")
         graves = payload.get("graves") or []
         if not graves:
             raise HTTPException(400, "No graves selected.")
+        cur = _current_locked() if any(g.get("current") for g in graves) else None
         try:
-            return export_site_dxf(graves, out, payload.get("crs") or None,
-                                   include_photos=bool(payload.get("photos", True)))
+            return export_site(graves, out, payload.get("crs") or None,
+                               list(payload.get("formats") or []), cur,
+                               photos=bool(payload.get("photos", True)),
+                               outlines=bool(payload.get("outlines", True)),
+                               centerlines=bool(payload.get("centerlines", False)),
+                               labels=bool(payload.get("labels", True)),
+                               title=str(payload.get("title", "")).strip())
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @app.post("/api/dialog")
+    def native_dialog(payload: dict = Body(...)):
+        """Open a Windows file/folder dialog on this machine; return paths."""
+        from boneseg.webui.dialogs import ask
+        initial = str(payload.get("initial", "")).strip().strip('"')
+        if initial and not Path(initial).is_dir():
+            initial = str(Path(initial).parent) if Path(initial).parent.is_dir() else ""
+        try:
+            return {"paths": ask(str(payload.get("kind", "files")), str(payload.get("title", "")),
+                                 initial, str(payload.get("filetypes", "graves")))}
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
 
     # ------------------------------------------------------------------ #
     # GCP georeferencing                                                  #
@@ -1356,8 +1397,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         pp = _pp_from(payload)
 
         # save_mask_raster writes .tif for georeferenced inputs, .png otherwise.
+        # The with_suffix() form is what older versions wrote for stems that
+        # end in "." ("Gr.41 a.k." -> "Gr.41 a.k.tif").
+        legacy = item_dir / f"{src.stem}_mask"
         mask_path = next((p for p in (item_dir / f"{src.stem}_mask.tif",
-                                      item_dir / f"{src.stem}_mask.png")
+                                      item_dir / f"{src.stem}_mask.png",
+                                      legacy.with_suffix(".tif"), legacy.with_suffix(".png"))
                           if p.is_file()), None)
 
         _acquire()

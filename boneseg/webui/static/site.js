@@ -1,11 +1,11 @@
 /* Site view — every georeferenced grave of one site on one map.
  *
- * Loads the photos of a folder (GCP sidecars / GeoTIFFs) plus the vectors
- * already exported for them, and stacks them in true position over an
- * optional Esri / OSM basemap (Leaflet, loaded on first use). The server
- * keeps no state: /api/site/scan returns everything the map needs, photos
- * come warped per grave from /api/site/photo, and the site DXF export gets
- * the grave list back.
+ * The user picks the graves (photos, export folders/files, whole folders —
+ * through the normal Windows dialogs, served by /api/dialog) and can add the
+ * grave open in the editor to check a fresh georeference on the map. The
+ * server keeps no site state: /api/site/scan returns everything the map
+ * needs, photo tiles come per grave from /api/site/photo, and the export
+ * (DXF / GeoPackage / PDF) gets the grave list back.
  */
 (() => {
   const LEAFLET = "https://unpkg.com/leaflet@1.9.4/dist/";
@@ -32,9 +32,17 @@
   let map = null, mapMode = null, baseLayer = null;
   let site = null;           // last scan result
   let items = [];            // per grave: {g, color, visible, photoOn, layers...}
+  let sources = [];          // picked files / folders
+  try { sources = JSON.parse(store.get("sources", "[]")) || []; } catch { sources = []; }
+  let scanSeq = 0;
 
   const panel = $("#sitepanel");
   const isOpen = () => !panel.hidden;
+  const editorGeoref = () => !!(S.image && S.image.georef);
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
 
   function loadLeaflet() {
     if (window.L) return Promise.resolve();
@@ -53,15 +61,23 @@
   }
 
   /* ---------------- open / close ---------------- */
-  function openSite() {
+  function showPanel() {
     if (batchPanelOpen()) $("#batchtoggle").click();
     panel.hidden = false;
     $("#canvaswrap").style.display = "none";
     $("#sidebar").hidden = true;  // segmentation controls are idle here — give the map the room
     $("#sitetoggle").classList.add("active");
     if (!$("#sitevec").value) $("#sitevec").value = $("#outdir").value;
-    loadLeaflet().then(() => { if (map) map.invalidateSize(); })
-      .catch((e) => toast(`Site view: ${e.message}`, "error", 9000));
+    if (!$("#sitetitle").value) $("#sitetitle").value = $("#sitename").value;
+  }
+  function openSite() {
+    showPanel();
+    loadLeaflet().then(() => {
+      if (map) map.invalidateSize();
+      // Refresh: the editor grave may have new GCPs or new edits since.
+      if (sources.length || ($("#sitecurrent").checked && editorGeoref())) loadSite();
+      else $("#sitesummary").textContent = "Add graves: photos, export folders or exported files.";
+    }).catch((e) => toast(`Site view: ${e.message}`, "error", 9000));
   }
   function closeSite() {
     panel.hidden = true;
@@ -79,9 +95,74 @@
     }
   });
 
+  /* "Check on map" from the GCP panel: open the site view on the editor grave. */
+  window.siteShowCurrent = async () => {
+    if (!editorGeoref()) { toast("Georeference the photo first (Apply georeference).", "error"); return; }
+    $("#sitecurrent").checked = true;
+    showPanel();
+    try { await loadLeaflet(); } catch (e) { toast(`Site view: ${e.message}`, "error", 9000); return; }
+    if (map) map.invalidateSize();
+    await loadSite({ focusCurrent: true });
+  };
+
+  /* ---------------- dialogs + sources ---------------- */
+  async function dialog(kind, title, initial, filetypes) {
+    try {
+      const r = await apiPost("/api/dialog", { kind, title, initial: initial || "", filetypes });
+      return r.paths || [];
+    } catch (err) {
+      toast(`Dialog: ${err.message}`, "error");
+      return [];
+    }
+  }
+  function lastDir() {
+    const s = sources[sources.length - 1];
+    return s ? s.replace(/[\\/][^\\/]*$/, "") : ($("#sitevec").value || "");
+  }
+  function addSources(paths) {
+    let n = 0;
+    for (const p of paths) if (p && !sources.includes(p)) { sources.push(p); n++; }
+    if (n) { saveSources(); loadSite({ fit: true }); }
+  }
+  function saveSources() { store.set("sources", JSON.stringify(sources)); renderSources(); }
+  function renderSources() {
+    $("#sitesources").innerHTML = sources.map((s, i) => {
+      const short = s.split(/[\\/]/).slice(-2).join("\\");
+      return `<div class="sitesrc" title="${escapeHtml(s)}"><span>${escapeHtml(short)}</span>` +
+             `<button class="tbtn mini" data-rm="${i}" title="Remove">✕</button></div>`;
+    }).join("");
+    $("#siteclear").hidden = !sources.length;
+  }
+  $("#sitesources").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-rm]");
+    if (!b) return;
+    sources.splice(+b.dataset.rm, 1);
+    saveSources();
+    loadSite();
+  });
+  $("#siteclear").addEventListener("click", () => { sources = []; saveSources(); loadSite(); });
+  $("#siteaddfiles").addEventListener("click", async () => {
+    addSources(await dialog("files", "Pick the graves: photos and/or exported files (Ctrl / Shift for many)", lastDir(), "graves"));
+  });
+  $("#siteadddir").addEventListener("click", async () => {
+    addSources(await dialog("folder", "Pick a folder with grave photos or exports", lastDir()));
+  });
+  $("#siteaddpath").addEventListener("click", () => {
+    const v = $("#sitepath").value.trim().replace(/^"|"$/g, "");
+    if (v) { $("#sitepath").value = ""; addSources([v]); }
+  });
+  $("#sitepath").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#siteaddpath").click(); });
+  $("#sitevecbrowse").addEventListener("click", async () => {
+    const p = await dialog("folder", "Export folder (where BoneSeg saved the vectors)", $("#sitevec").value);
+    if (p[0]) { $("#sitevec").value = p[0]; loadSite(); }
+  });
+  $("#sitevec").addEventListener("change", () => loadSite());
+  $("#sitecurrent").addEventListener("change", () => loadSite());
+  $("#siterecursive").addEventListener("change", () => loadSite());
+
   /* ---------------- map ---------------- */
   function ensureMap(mode) {
-    if (map && mapMode === mode) return;
+    if (map && mapMode === mode) return false;
     if (map) { map.remove(); map = null; baseLayer = null; }
     mapMode = mode;
     const opts = { preferCanvas: true, zoomSnap: 0.25, zoomDelta: 0.5, wheelPxPerZoomLevel: 90 };
@@ -89,8 +170,8 @@
       ? L.map("sitemap", { ...opts, maxZoom: 26 })
       : L.map("sitemap", { ...opts, crs: L.CRS.Simple, minZoom: -6, maxZoom: 14 });
     L.control.scale({ imperial: false, maxWidth: 160 }).addTo(map);
-    map.on("click", () => map.closePopup());
     setBasemap($("#sitebase").value);
+    return true;
   }
 
   function setBasemap(key) {
@@ -104,36 +185,54 @@
     baseLayer.bringToBack();
   }
 
-  function photoUrl(g) {
-    const q = new URLSearchParams({ path: g.photo, mode: site.mode, ox: site.origin[0],
-                                    oy: site.origin[1], crs: g.crs || site.crs || "",
-                                    size: 2048 });
-    return `/api/site/photo?${q}`;
+  function graveSpec(g) {
+    return { name: g.name, stem: g.stem, photo: g.photo, photo_kind: g.photo_kind,
+             photo_affine: g.photo_affine, vec: g.vec, crs: g.crs, current: g.current };
+  }
+
+  async function loadPhoto(it) {
+    if (it.photo || it.photoLoading) return;
+    it.photoLoading = true;
+    try {
+      const r = await fetch("/api/site/photo", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ grave: graveSpec(it.g), mode: site.mode, origin: site.origin }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      const blob = await r.blob();
+      if (it.dead) return;
+      it.photoUrl = URL.createObjectURL(blob);
+      it.photo = L.imageOverlay(it.photoUrl, it.g.bounds,
+                                { opacity: +$("#siteopacity").value, interactive: false });
+      refreshItem(it);
+    } catch (err) {
+      it.g.notes.push(`photo: ${err.message}`);
+    } finally {
+      it.photoLoading = false;
+    }
   }
 
   function buildLayers(it) {
     const g = it.g;
-    it.photo = null; it.rings = null; it.lines = null; it.frame = null; it.label = null;
     if (!g.georeferenced) return;
     const c = it.color;
-    if ((g.rings || []).length) {
-      it.rings = L.polyline(g.rings, { color: c, weight: 1.6, opacity: 0.95, interactive: false });
-    }
-    if ((g.lines || []).length) {
-      it.lines = L.polyline(g.lines, { color: c, weight: 1.2, opacity: 0.95, interactive: false });
-    }
+    if ((g.rings || []).length) it.rings = L.polyline(g.rings, { color: c, weight: 1.6, opacity: 0.95, interactive: false });
+    if ((g.lines || []).length) it.lines = L.polyline(g.lines, { color: c, weight: 1.1, opacity: 0.9, interactive: false });
     const shape = g.footprint || hullOf(g);
     if (shape) {
-      it.frame = L.polygon(shape, { color: c, weight: 1, opacity: 0.8, dashArray: "4 4",
-                                    fill: true, fillOpacity: 0 });
+      it.frame = L.polygon(shape, { color: c, weight: g.current ? 2.5 : 1, opacity: 0.85,
+                                    dashArray: g.current ? null : "4 4", fill: true, fillOpacity: 0 });
       it.frame.bindPopup(() => popupHtml(it), { maxWidth: 320 });
-      it.label = L.tooltip({ permanent: true, direction: "center", className: "sitelabel" })
+      it.label = L.tooltip({ permanent: true, direction: "center",
+                             className: "sitelabel" + (g.current ? " current" : "") })
         .setLatLng(L.polygon(shape).getBounds().getCenter()).setContent(escapeHtml(g.name));
     }
-    if (g.photo && g.bounds) {
-      it.photo = L.imageOverlay(photoUrl(g), g.bounds,
-                                { opacity: +$("#siteopacity").value, interactive: false });
-    }
+  }
+
+  function dropLayers(it) {
+    it.dead = true;
+    for (const l of [it.photo, it.rings, it.lines, it.frame, it.label]) if (l && map) map.removeLayer(l);
+    if (it.photoUrl) URL.revokeObjectURL(it.photoUrl);
   }
 
   function hullOf(g) {
@@ -147,13 +246,14 @@
   function refreshItem(it) {
     if (!map) return;
     const on = it.visible && it.g.georeferenced;
-    const showPhotos = $("#sitephotos").checked;
     const toggle = (layer, want) => {
       if (!layer) return;
       if (want && !map.hasLayer(layer)) layer.addTo(map);
       else if (!want && map.hasLayer(layer)) map.removeLayer(layer);
     };
-    toggle(it.photo, on && showPhotos && it.photoOn);
+    const wantPhoto = on && $("#sitephotos").checked && it.photoOn && !!it.g.bounds;
+    if (wantPhoto && !it.photo) loadPhoto(it);
+    toggle(it.photo, wantPhoto);
     toggle(it.frame, on);
     toggle(it.label, on && $("#sitelabels").checked);
     toggle(it.rings, on && $("#siteoutlines").checked);
@@ -166,19 +266,15 @@
   function zoomTo(list) {
     let b = null;
     for (const it of list) {
-      if (!it.g.georeferenced) continue;
-      const src = it.frame || it.photo;
-      if (!src) continue;
-      const bb = src.getBounds();
+      if (!it.g.georeferenced || !it.frame) continue;
+      const bb = it.frame.getBounds();
       b = b ? b.extend(bb) : L.latLngBounds(bb.getSouthWest(), bb.getNorthEast());
     }
     if (b) map.fitBounds(b.pad(0.08), { maxZoom: mapMode === "map" ? 24 : 9 });
   }
 
   /* ---------------- grave list ---------------- */
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  }
+  const canOpen = (g) => g.photo && g.photo_kind === "file" && !g.current;
 
   function popupHtml(it) {
     const g = it.g;
@@ -186,24 +282,23 @@
     return `<b>${escapeHtml(g.name)}</b><br>
       <span class="hint">${escapeHtml(g.crs || "no CRS")} · ${g.n_rings} outlines · ${g.n_lines} centerlines` +
       `${g.dist_m != null ? ` · ${g.dist_m} m from site centre` : ""}</span>${notes}
-      ${g.photo ? `<div class="btnrow"><button class="btn sm primary" data-open="${items.indexOf(it)}">✎ Open in editor</button></div>` : ""}`;
+      ${canOpen(g) ? `<div class="btnrow"><button class="btn sm primary" data-open="${items.indexOf(it)}">✎ Open in editor</button></div>` : ""}
+      ${g.current ? `<div class="btnrow"><button class="btn sm primary" data-back="1">✎ Back to the editor</button></div>` : ""}`;
   }
 
   function renderList() {
-    const wrap = $("#sitelist");
-    if (!items.length) { wrap.innerHTML = ""; return; }
-    wrap.innerHTML = items.map((it, i) => {
+    $("#sitelist").innerHTML = items.map((it, i) => {
       const g = it.g;
       const warn = g.notes.length ? `<span class="sitewarn" title="${escapeHtml(g.notes.join("\n"))}">⚠</span>` : "";
-      const off = g.georeferenced ? "" : " off";
-      return `<div class="siterow${off}" data-i="${i}">
+      const cls = (g.georeferenced ? "" : " off") + (g.current ? " cur" : "");
+      return `<div class="siterow${cls}" data-i="${i}">
         <input type="checkbox" data-act="vis" ${it.visible ? "checked" : ""} ${g.georeferenced ? "" : "disabled"}>
         <span class="swatch" style="background:${it.color}"></span>
-        <a href="#" data-act="zoom" title="${g.georeferenced ? "Zoom to grave" : "Not georeferenced — set GCPs in the editor (G)"}">${escapeHtml(g.name)}</a>
+        <a href="#" data-act="zoom" title="${g.georeferenced ? "Zoom to grave" : escapeHtml(g.notes[0] || "not georeferenced")}">${escapeHtml(g.name)}</a>
         ${warn}
         <span class="siteicons">
-          ${g.photo && g.bounds ? `<button class="tbtn mini${it.photoOn ? " active" : ""}" data-act="photo" title="Show / hide this photo">📷</button>` : ""}
-          ${g.photo ? `<button class="tbtn mini" data-act="open" title="Open in editor">✎</button>` : ""}
+          ${g.bounds ? `<button class="tbtn mini${it.photoOn ? " active" : ""}" data-act="photo" title="Show / hide this photo">📷</button>` : ""}
+          ${canOpen(g) ? `<button class="tbtn mini" data-act="open" title="Open in editor">✎</button>` : ""}
         </span>
       </div>`;
     }).join("");
@@ -236,6 +331,7 @@
   $("#sitemap").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-open]");
     if (b) openInEditor(items[+b.dataset.open]);
+    if (e.target.closest("button[data-back]")) closeSite();
   });
 
   async function openInEditor(it) {
@@ -246,23 +342,36 @@
   }
 
   /* ---------------- load ---------------- */
-  async function loadSite() {
-    const photoDir = $("#sitephotodir").value.trim();
-    const vecDir = $("#sitevec").value.trim();
-    store.set("photodir", photoDir);
-    store.set("vecdir", vecDir);
-    $("#sitesummary").textContent = "Reading the site…";
-    $("#siteload").disabled = true;
+  async function loadSite(opt = {}) {
+    const wantCurrent = $("#sitecurrent").checked && editorGeoref();
+    store.set("vecdir", $("#sitevec").value.trim());
+    if (!sources.length && !wantCurrent) {
+      for (const it of items) dropLayers(it);
+      items = []; site = null;
+      renderList();
+      $("#sitesummary").textContent = "Add graves: photos, export folders or exported files.";
+      return;
+    }
+    const seq = ++scanSeq;
+    $("#sitesummary").textContent = "Reading the graves…";
     try {
       await loadLeaflet();
       const res = await apiPost("/api/site/scan", {
-        photo_dir: photoDir, vec_dir: vecDir, recursive: $("#siterecursive").checked,
-        vector_only: $("#sitevecs").checked,
+        sources, vec_dir: $("#sitevec").value.trim(), recursive: $("#siterecursive").checked,
+        current: wantCurrent,
       });
+      if (seq !== scanSeq) return;  // a newer scan superseded this one
+      const fresh = ensureMap(res.mode);
+      // Keep per-grave choices (visible / photo) across rescans.
+      const prev = new Map(items.map((it) => [it.g.name, it]));
+      for (const it of items) dropLayers(it);
       site = res;
-      ensureMap(res.mode);
-      for (const it of items) for (const l of [it.photo, it.rings, it.lines, it.frame, it.label]) if (l) map.removeLayer(l);
-      items = res.graves.map((g, i) => ({ g, color: COLORS[i % COLORS.length], visible: g.georeferenced, photoOn: true }));
+      items = res.graves.map((g, i) => {
+        const old = prev.get(g.name);
+        return { g, color: g.current ? "#ff3b3b" : COLORS[i % COLORS.length],
+                 visible: g.georeferenced && (old ? old.visible : true),
+                 photoOn: old ? old.photoOn : true };
+      });
       items.forEach(buildLayers);
       refreshAll();
       renderList();
@@ -272,26 +381,30 @@
         `<b>${placed.length}</b> of ${items.length} graves placed` +
         (res.crs ? ` · ${escapeHtml(res.crs)}` : " · local coordinates (no EPSG — no basemap)") +
         (warn ? ` · <span class="sitewarn">⚠ ${warn} to check</span>` : "") +
-        (res.truncated ? " · <b>list truncated</b>" : "");
-      if (!$("#siteout").value && photoDir) $("#siteout").value = photoDir.replace(/[\\/]+$/, "") + "\\site_plan.dxf";
-      if (placed.length) zoomTo(placed);
-      else toast("No georeferenced grave found — georeference the photos first (GCP tool, G).", "", 9000);
+        (res.problems.length ? `<br><span class="sitewarn">${res.problems.map(escapeHtml).join("<br>")}</span>` : "");
+      if (!$("#siteout").value) {
+        const base = sources.length ? lastDir() : $("#sitevec").value;
+        if (base) $("#siteout").value = base.replace(/[\\/]+$/, "") + "\\site_plan";
+      }
+      const cur = items.find((it) => it.g.current);
+      if (opt.focusCurrent && cur) { zoomTo([cur]); if (cur.frame) cur.frame.openPopup(); }
+      else if ((opt.fit || fresh) && placed.length) zoomTo(placed);
+      if (opt.focusCurrent && cur && placed.length === 1) {
+        toast("Only the editor grave is on the map — add the other graves of the site to compare.", "", 7000);
+      }
     } catch (err) {
       $("#sitesummary").textContent = "";
       toast(`Site view: ${err.message}`, "error", 9000);
-    } finally {
-      $("#siteload").disabled = false;
     }
-  }
-  $("#siteload").addEventListener("click", loadSite);
-  for (const id of ["#sitephotodir", "#sitevec"]) {
-    $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") loadSite(); });
   }
 
   /* ---------------- display controls ---------------- */
   $("#sitebase").addEventListener("change", (e) => setBasemap(e.target.value));
   for (const id of ["#sitephotos", "#siteoutlines", "#sitecenter", "#sitelabels"]) {
-    $(id).addEventListener("change", refreshAll);
+    $(id).addEventListener("change", () => {
+      store.set(id.slice(1), $(id).checked ? "1" : "0");
+      refreshAll();
+    });
   }
   $("#siteopacity").addEventListener("input", (e) => {
     for (const it of items) if (it.photo) it.photo.setOpacity(+e.target.value);
@@ -304,27 +417,36 @@
   });
 
   /* ---------------- export ---------------- */
+  $("#siteoutbrowse").addEventListener("click", async () => {
+    const p = await dialog("save", "Save the site plan as (the extension is added per format)",
+                           $("#siteout").value || lastDir(), "site");
+    if (p[0]) $("#siteout").value = p[0].replace(/\.(dxf|gpkg|pdf)$/i, "");
+  });
   $("#siteexport").addEventListener("click", async () => {
-    const chosen = items.filter((it) => it.visible && it.g.georeferenced).map((it) => ({
-      name: it.g.name, stem: it.g.stem, photo: it.g.photo, vec: it.g.vec,
-    }));
+    const chosen = items.filter((it) => it.visible && it.g.georeferenced).map((it) => graveSpec(it.g));
     if (!chosen.length) { toast("No visible georeferenced graves to export.", "error"); return; }
+    const formats = [...document.querySelectorAll("#siteformats input:checked")].map((c) => c.value);
+    if (!formats.length) { toast("Tick at least one format (CAD / GIS / PDF).", "error"); return; }
     const out = $("#siteout").value.trim();
-    if (!out) { toast("Enter where to save the site DXF.", "error"); return; }
+    if (!out) { toast("Choose where to save the site plan.", "error"); return; }
     $("#siteexportstatus").textContent = `Writing ${chosen.length} graves…`;
     $("#siteexport").disabled = true;
     try {
-      const r = await apiPost("/api/site/export_dxf", {
-        graves: chosen, out_path: out, crs: site && site.crs, photos: $("#siteexportphotos").checked,
+      const r = await apiPost("/api/site/export", {
+        graves: chosen, out_base: out, crs: site && site.crs, formats,
+        photos: $("#siteexportphotos").checked && $("#sitephotos").checked,
+        outlines: $("#siteoutlines").checked, centerlines: $("#sitecenter").checked,
+        labels: $("#sitelabels").checked, title: $("#sitetitle").value,
       });
+      const names = r.files.filter((f) => !/_photos[\\/]/.test(f)).map((f) => f.split(/[\\/]/).pop());
       $("#siteexportstatus").innerHTML =
-        `Saved <code>${escapeHtml(r.path)}</code> — ${r.graves} graves, ${r.photos} photos` +
-        (r.skipped.length ? `, skipped: ${escapeHtml(r.skipped.join(", "))}` : "") +
-        ` <a href="#" id="sitereveal">open folder</a>`;
-      toast("Site DXF saved.", "ok");
+        `Saved ${r.graves} graves: <code>${names.map(escapeHtml).join("</code>, <code>")}</code> ` +
+        `<a href="#" id="sitereveal">open folder</a>`;
+      $("#siteexportstatus").dataset.folder = r.folder;
+      toast("Site plan saved.", "ok");
     } catch (err) {
       $("#siteexportstatus").textContent = "";
-      toast(`Site DXF export failed: ${err.message}`, "error", 9000);
+      toast(`Site export failed: ${err.message}`, "error", 9000);
     } finally {
       $("#siteexport").disabled = false;
     }
@@ -332,11 +454,15 @@
   $("#siteexportstatus").addEventListener("click", (e) => {
     if (e.target.id !== "sitereveal") return;
     e.preventDefault();
-    apiPost("/api/reveal", { path: $("#siteout").value.trim() }).catch((err) => toast(err.message, "error"));
+    apiPost("/api/reveal", { path: $("#siteexportstatus").dataset.folder })
+      .catch((err) => toast(err.message, "error"));
   });
 
-  /* ---------------- restore inputs ---------------- */
-  $("#sitephotodir").value = store.get("photodir", "");
+  /* ---------------- restore ---------------- */
   $("#sitevec").value = store.get("vecdir", "");
   $("#sitebase").value = store.get("base", "esri");
+  for (const [id, def] of [["sitephotos", "1"], ["siteoutlines", "1"], ["sitecenter", "0"], ["sitelabels", "1"]]) {
+    $("#" + id).checked = store.get(id, def) === "1";
+  }
+  renderSources();
 })();

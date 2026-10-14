@@ -2726,3 +2726,5 @@ async function init() {
 }
 
 init();
+
+$("#gcpmapbtn").addEventListener("click", () => window.siteShowCurrent && window.siteShowCurrent());

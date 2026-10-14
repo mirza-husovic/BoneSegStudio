@@ -454,7 +454,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         # cached app.js paired with a newer backend silently breaks the skeleton
         # view (it fetches endpoints the refactor removed).
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        for asset in ("app.js", "app.css"):
+        for asset in ("app.js", "app.css", "site.js"):
             try:
                 ver = int((STATIC_DIR / asset).stat().st_mtime)
             except OSError:
@@ -1099,6 +1099,59 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(400, f"Path does not exist: {p}")
         os.startfile(str(p if p.is_dir() else p.parent))  # noqa: S606
         return {"ok": True}
+
+    # ------------------------------------------------------------------ #
+    # Site view — all graves of one site on one map                       #
+    # ------------------------------------------------------------------ #
+    # Plain ``def`` endpoints: FastAPI runs them in its thread pool, so a
+    # folder scan or a photo warp never blocks the editor's requests. They
+    # read files only and never touch the Studio state, hence no lock.
+    @app.post("/api/site/scan")
+    def site_scan(payload: dict = Body(...)):
+        from boneseg.data.site import scan_site
+        photo_dir = str(payload.get("photo_dir", "")).strip().strip('"')
+        vec_dir = str(payload.get("vec_dir", "")).strip().strip('"')
+        if photo_dir and not Path(photo_dir).is_dir():
+            raise HTTPException(400, f"Photo folder does not exist: {photo_dir}")
+        if vec_dir and not Path(vec_dir).is_dir():
+            raise HTTPException(400, f"Export folder does not exist: {vec_dir}")
+        if not photo_dir and not vec_dir:
+            raise HTTPException(400, "Give the photo folder and/or the export folder.")
+        vo = payload.get("vector_only")
+        return scan_site(photo_dir, vec_dir, bool(payload.get("recursive", True)),
+                         None if vo is None else bool(vo))
+
+    @app.get("/api/site/photo")
+    def site_photo(path: str, mode: str = "map", ox: float = 0.0, oy: float = 0.0,
+                   crs: str = "", size: int = 2048):
+        from boneseg.data.site import render_photo
+        try:
+            data = render_photo(path, mode, (ox, oy), crs or None,
+                                max_dim=max(256, min(int(size), 4096)))
+        except FileNotFoundError:
+            raise HTTPException(404, f"Photo not found: {path}")
+        except Exception as exc:
+            logger.exception("Site photo render failed: %s", path)
+            raise HTTPException(400, f"Could not render photo: {exc}")
+        return Response(data, media_type="image/webp",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+    @app.post("/api/site/export_dxf")
+    def site_export_dxf(payload: dict = Body(...)):
+        from boneseg.data.site import export_site_dxf
+        out = str(payload.get("out_path", "")).strip().strip('"')
+        if not out:
+            raise HTTPException(400, "Give the output DXF path.")
+        if not out.lower().endswith(".dxf"):
+            out += ".dxf"
+        graves = payload.get("graves") or []
+        if not graves:
+            raise HTTPException(400, "No graves selected.")
+        try:
+            return export_site_dxf(graves, out, payload.get("crs") or None,
+                                   include_photos=bool(payload.get("photos", True)))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     # ------------------------------------------------------------------ #
     # GCP georeferencing                                                  #

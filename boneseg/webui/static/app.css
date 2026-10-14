@@ -198,3 +198,32 @@ body.busy .btn:not(.danger), body.busy #tools .tbtn, body.busy #applyedits {
 
 a { color: #4dd0e1; }
 code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; }
+
+/* ---------- site view ---------- */
+#sitepanel { flex: 1; display: flex; min-height: 0; }
+#siteside { width: 300px; flex: 0 0 auto; overflow-y: auto; padding: 12px;
+  background: var(--panel); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 7px; }
+#siteside h3 { margin: 0; }
+#siteside .btnrow { align-items: center; }
+#sitemap { flex: 1; min-width: 0; background: #0a0e12; }
+#sitemap .leaflet-popup-content { font: 13px/1.4 "Segoe UI", system-ui, sans-serif; }
+#sitemap .leaflet-popup-content ul { margin: 6px 0; padding-left: 18px; color: #b45309; }
+#sitemap .leaflet-popup-content .hint { color: #555; }
+.sitelisthead { display: flex; justify-content: space-between; align-items: center; }
+#sitelist { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+#sitelist:empty { display: none; }
+.siterow { display: flex; align-items: center; gap: 6px; font-size: 13px; padding: 2px 4px;
+  border-radius: 6px; }
+.siterow:hover { background: var(--panel2); }
+.siterow a { color: var(--text); text-decoration: none; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.siterow.off a { color: var(--muted); font-style: italic; }
+.siteicons { display: flex; gap: 2px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+.sitewarn { color: #f59e0b; cursor: help; }
+.tbtn.mini { padding: 1px 6px; font-size: 12px; }
+.leaflet-tooltip.sitelabel { background: rgba(15, 20, 25, .75); color: #fff; border: none; box-shadow: none;
+  font-size: 11px; padding: 1px 5px; }
+.leaflet-tooltip.sitelabel::before { display: none; }

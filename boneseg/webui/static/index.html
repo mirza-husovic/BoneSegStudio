@@ -127,6 +127,7 @@
       <button id="fitbtn" class="tbtn" title="Fit to window (F, double-click)">⤢ Fit</button>
       <div class="sep"></div>
       <button id="batchtoggle" class="tbtn" title="Batch processing">📁 Batch</button>
+      <button id="sitetoggle" class="tbtn" title="Site view — all georeferenced graves of one site on one map">🗺 Site</button>
     </div>
 
     <div id="canvaswrap">
@@ -226,6 +227,56 @@
       <div id="batchtablewrap"></div>
     </div>
 
+    <div id="sitepanel" hidden>
+      <aside id="siteside">
+        <h3>🗺 Site view</h3>
+        <p class="hint">All georeferenced graves of one site, in their true
+          positions. Photos come from the folder (with their GCPs), vectors
+          from what you exported.</p>
+        <label class="lbl" for="sitephotodir">Photo folder</label>
+        <input id="sitephotodir" type="text" placeholder="C:\path	o\site photos" spellcheck="false">
+        <label class="check"><input id="siterecursive" type="checkbox" checked> include subfolders</label>
+        <label class="lbl" for="sitevec">Export folder <span class="hint">(vectors)</span></label>
+        <input id="sitevec" type="text" spellcheck="false">
+        <label class="check" title="Exported graves whose photo is not in the photo folder"><input id="sitevecs" type="checkbox"> also graves without a photo</label>
+        <button id="siteload" class="btn primary block" type="button">▶ Load site</button>
+        <div id="sitesummary" class="hint"></div>
+
+        <div class="sect-title">Display</div>
+        <div class="btnrow">
+          <label class="lbl-inline" for="sitebase">Basemap</label>
+          <select id="sitebase">
+            <option value="esri">Esri satellite</option>
+            <option value="osm">OpenStreetMap</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+        <div id="sitebasehint" class="hint" hidden>No basemap: the graves have no EPSG (set it in the GCP tool).</div>
+        <div class="checkgrid">
+          <label class="check"><input id="sitephotos" type="checkbox" checked> Photos</label>
+          <label class="check"><input id="sitelabels" type="checkbox" checked> Labels</label>
+          <label class="check"><input id="siteoutlines" type="checkbox" checked> Outlines</label>
+          <label class="check"><input id="sitecenter" type="checkbox" checked> Centerlines</label>
+        </div>
+        <label class="lbl">Photo opacity</label>
+        <input id="siteopacity" type="range" min="0.1" max="1" step="0.05" value="1">
+
+        <div class="sect-title sitelisthead">Graves
+          <span><button id="siteall" class="tbtn mini" type="button" title="Show / hide all">☑ all</button>
+          <button id="sitefit" class="tbtn mini" type="button" title="Zoom to the visible graves">⤢ fit</button></span>
+        </div>
+        <div id="sitelist"></div>
+
+        <div class="sect-title">Export</div>
+        <label class="lbl" for="siteout">Site DXF <span class="hint">(visible graves)</span></label>
+        <input id="siteout" type="text" spellcheck="false" placeholder="C:\path\site_plan.dxf">
+        <label class="check"><input id="siteexportphotos" type="checkbox" checked> photos as underlay</label>
+        <button id="siteexport" class="btn block" type="button">💾 Export site DXF</button>
+        <div id="siteexportstatus" class="hint"></div>
+      </aside>
+      <div id="sitemap"></div>
+    </div>
+
     <footer id="statusbar">
       <span id="stats">Ready.</span>
     </footer>
@@ -234,5 +285,6 @@
 
 <div id="toasts"></div>
 <script src="/static/app.js"></script>
+<script src="/static/site.js"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@
 from boneseg.postprocessing.cleanup import (
     adaptive_threshold_and_clean,
     carve_mask_by_centerlines,
+    mask_under_centerlines,
     count_components,
     remove_component_at,
     threshold_and_clean,
@@ -24,6 +25,7 @@ __all__ = [
     "adaptive_threshold_and_clean",
     "apply_centerline_edits",
     "carve_mask_by_centerlines",
+    "mask_under_centerlines",
     "count_components",
     "remove_component_at",
     "threshold_and_clean",

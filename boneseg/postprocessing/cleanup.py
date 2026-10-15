@@ -169,3 +169,26 @@ def carve_mask_by_centerlines(
     out = mask01.copy()
     out[drop] = 0
     return out
+
+
+def mask_under_centerlines(mask01: np.ndarray, skeleton: np.ndarray) -> np.ndarray:
+    """Only the mask components a centerline runs through.
+
+    For graves edited in the Skeleton view the hand-edited centerlines are
+    the drawing: a mask crumb with no line was never visible there (too
+    small to skeletonize, or the remnant of a carved bone), so it must not
+    turn up as an outline in exports either. Returns a NEW array.
+    """
+    import cv2  # deferred like scipy above: keep import cost off the hot path
+
+    m = (np.asarray(mask01) > 0).astype(np.uint8)
+    sk = np.asarray(skeleton) > 0
+    if not m.any() or not sk.any():
+        return m
+    n, labels = cv2.connectedComponents(m, connectivity=8)
+    if n <= 1:
+        return m
+    ell = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    touched = np.unique(labels[cv2.dilate(sk.astype(np.uint8), ell) > 0])
+    touched = touched[touched > 0]
+    return np.isin(labels, touched).astype(np.uint8)

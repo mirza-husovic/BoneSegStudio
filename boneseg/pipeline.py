@@ -87,9 +87,18 @@ class PipelineResult:
     stats: dict = field(default_factory=dict)
 
     def rings(self) -> list[Polyline]:
-        """Outline polygons, polygonized on first use and cached."""
+        """Outline polygons, polygonized on first use and cached.
+
+        After edits in the Skeleton view (``stats["edited"] == "vector"``)
+        the hand-edited centerlines are the drawing, so only mask parts a
+        centerline runs through become outlines — crumbs that were never
+        visible in the Skeleton view don't reappear in exports."""
         if self.rings_out is None:
-            self.rings_out = mask_to_rings(self.mask, self.georef)
+            mask = self.mask
+            if self.stats.get("edited") == "vector" and self.skeleton is not None:
+                from boneseg.postprocessing import mask_under_centerlines
+                mask = mask_under_centerlines(mask, self.skeleton)
+            self.rings_out = mask_to_rings(mask, self.georef)
         return self.rings_out
 
     @property

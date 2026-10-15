@@ -616,7 +616,11 @@ def scan_site(sources: list[str], vec_dir: str | None = None, recursive: bool = 
         key = _norm(current["stem"])
         graves = [g for g in graves if _norm(g["stem"]) != key]
         cg = _new_grave(f"{current['name']} (editor)", current["stem"])
-        cg.update(photo=current["photo"], photo_kind="current", current=True)
+        cg.update(photo=current["photo"], photo_kind="current", current=True,
+                  edited_lines=bool(current.get("edited_lines")))
+        if cg["edited_lines"]:
+            cg["notes"].append("centerlines edited by hand — shown and exported even "
+                               "with Centerlines off (the outlines come from the mask)")
         graves.insert(0, cg)
 
     for g in graves:
@@ -724,7 +728,7 @@ def scan_site(sources: list[str], vec_dir: str | None = None, recursive: bool = 
     for g in graves:
         item = {k: g.get(k) for k in ("name", "stem", "photo", "photo_kind", "photo_affine",
                                       "vec", "notes", "georeferenced", "crs", "current",
-                                      "dist_m")}
+                                      "dist_m", "edited_lines")}
         item["n_rings"], item["n_lines"] = len(g["_rings"]), len(g["_lines"])
         if g["georeferenced"]:
             try:
@@ -880,6 +884,7 @@ def _site_graves(graves: list[dict], site_crs: str | None, current: dict | None,
             return res
 
         rec = {"name": name, "index": i, "rings": to_site(rings), "lines": to_site(lines),
+               "edited_lines": bool(g.get("edited_lines")),
                "photo": None, "footprint": None}
         if georef is not None and w:
             hs = _to_crs_matrix(pixel_to_world_matrix(georef), w, h, crs, site_crs)
@@ -929,14 +934,15 @@ def _write_dxf(recs: list[dict], out: Path, want_rings: bool, want_lines: bool) 
     for r in recs:
         color = _ACI_COLORS[r["index"] % len(_ACI_COLORS)]
         lo, lc = _layer_name(r["name"], "OUTLINE"), _layer_name(r["name"], "CENTERLINE")
-        for ln, want in ((lo, want_rings), (lc, want_lines)):
+        r_lines = want_lines or r["edited_lines"]
+        for ln, want in ((lo, want_rings), (lc, r_lines)):
             if want and ln not in doc.layers:
                 doc.layers.add(ln, color=color)
         if want_rings:
             for ring in r["rings"]:
                 if len(ring) >= 3:
                     msp.add_lwpolyline(ring, close=True, dxfattribs={"layer": lo})
-        if want_lines:
+        if r_lines:
             for line in r["lines"]:
                 if len(line) >= 2:
                     msp.add_lwpolyline(line, close=False, dxfattribs={"layer": lc})
@@ -958,9 +964,10 @@ def _write_gpkg(recs: list[dict], out: Path, site_crs: str | None,
     if want_rings:
         layers.append(("outlines", [(r["name"], Polygon(ring)) for r in recs
                                      for ring in r["rings"] if len(ring) >= 4]))
-    if want_lines:
-        layers.append(("centerlines", [(r["name"], LineString(l)) for r in recs
-                                        for l in r["lines"] if len(l) >= 2]))
+    lines_rows = [(r["name"], LineString(l)) for r in recs
+                  if want_lines or r["edited_lines"] for l in r["lines"] if len(l) >= 2]
+    if lines_rows:
+        layers.append(("centerlines", lines_rows))
     layers.append(("photo_footprints", [(r["name"], Polygon(r["footprint"])) for r in recs
                                          if r["footprint"]]))
     n = 0
@@ -1048,11 +1055,13 @@ def _write_pdf(recs: list[dict], out: Path, site_crs: str | None, title: str,
             for ring in r["rings"]:
                 a = np.asarray(ring)
                 ax.plot(a[:, 0], a[:, 1], color=color, lw=lw, zorder=3)
-        if want_lines:
+        if want_lines or r["edited_lines"]:
+            # Hand-edited centerlines ARE the drawing: full weight, not grey.
+            edited = r["edited_lines"]
             for line in r["lines"]:
                 a = np.asarray(line)
-                ax.plot(a[:, 0], a[:, 1], color=color if with_photos else "#555",
-                        lw=lw * 0.7, zorder=3)
+                ax.plot(a[:, 0], a[:, 1], color=color if (with_photos or edited) else "#555",
+                        lw=lw if edited else lw * 0.7, zorder=3)
         if not with_photos and r["footprint"] and not (r["rings"] or r["lines"]):
             a = np.asarray(r["footprint"])
             ax.plot(a[:, 0], a[:, 1], color="#999", lw=0.3, ls="--", zorder=2)

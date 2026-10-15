@@ -145,15 +145,19 @@
     addSources(await dialog("files", "Pick the graves: photos and/or exported files (Ctrl / Shift for many)", lastDir(), "graves"));
   });
   $("#siteadddir").addEventListener("click", async () => {
-    addSources(await dialog("folder", "Pick a folder with grave photos or exports", lastDir()));
+    addSources(await dialog("folder", "Folder with grave photos or exports" + FOLDER_HINT, lastDir()));
   });
   $("#siteaddpath").addEventListener("click", () => {
     const v = $("#sitepath").value.trim().replace(/^"|"$/g, "");
     if (v) { $("#sitepath").value = ""; addSources([v]); }
   });
   $("#sitepath").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#siteaddpath").click(); });
+  // Windows folder pickers list folders only — an export folder full of
+  // files looks "empty". Say so, or it reads as broken.
+  const FOLDER_HINT = " — files are not listed here: open the folder and click Select Folder";
   $("#sitevecbrowse").addEventListener("click", async () => {
-    const p = await dialog("folder", "Export folder (where BoneSeg saved the vectors)", $("#sitevec").value);
+    const p = await dialog("folder", "Export folder (the one with the per-grave folders)" + FOLDER_HINT,
+                           $("#sitevec").value);
     if (p[0]) { $("#sitevec").value = p[0]; loadSite(); }
   });
   $("#sitevec").addEventListener("change", () => loadSite());
@@ -187,7 +191,8 @@
 
   function graveSpec(g) {
     return { name: g.name, stem: g.stem, photo: g.photo, photo_kind: g.photo_kind,
-             photo_affine: g.photo_affine, vec: g.vec, crs: g.crs, current: g.current };
+             photo_affine: g.photo_affine, vec: g.vec, crs: g.crs, current: g.current,
+             edited_lines: g.edited_lines };
   }
 
   async function loadPhoto(it) {
@@ -257,7 +262,7 @@
     toggle(it.frame, on);
     toggle(it.label, on && $("#sitelabels").checked);
     toggle(it.rings, on && $("#siteoutlines").checked);
-    toggle(it.lines, on && $("#sitecenter").checked);
+    toggle(it.lines, on && ($("#sitecenter").checked || !!it.g.edited_lines));
     if (it.photo && map.hasLayer(it.photo)) it.photo.bringToBack();
     if (baseLayer) baseLayer.bringToBack();
   }

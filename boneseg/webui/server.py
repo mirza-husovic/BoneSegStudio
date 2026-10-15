@@ -1118,6 +1118,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"name": state.source_path.stem, "stem": state.source_path.stem,
                 "photo": str(state.source_path), "image": state.image,
                 "georef": state.georef, "rings": rings, "lines": lines,
+                # Hand-edited centerlines (eraser in Skeleton view, Line pen)
+                # live only in the lines — the mask/outlines don't show them.
+                "edited_lines": bool(state.vectors_locked),
                 "key": (str(state.source_path), id(state.georef))}
 
     def _current_locked() -> dict | None:

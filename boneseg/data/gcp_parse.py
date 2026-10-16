@@ -53,6 +53,11 @@ _DEC_COMMA = re.compile(r"^-?\d+,\d+$")
 def _to_float(tok: str) -> float | None:
     """Parse a numeric token; Croatian decimal commas accepted."""
     tok = tok.strip()
+    # Python's float() accepts digit separators ("157_1" == 1571.0), which
+    # silently turned point IDs like 157_1 into coordinates and shifted
+    # every column. Survey numbers never contain "_".
+    if "_" in tok:
+        return None
     if _DEC_COMMA.match(tok):
         tok = tok.replace(",", ".")
     try:

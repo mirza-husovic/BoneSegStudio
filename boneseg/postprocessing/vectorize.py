@@ -165,39 +165,107 @@ def polylines_px_to_output(
 # ---------------------------------------------------------------------------
 # Outline polygons (carried over from predict.py's polygons/ output)
 # ---------------------------------------------------------------------------
-def mask_to_rings(mask01: np.ndarray, georef: GeoRef | None) -> list[Polyline]:
-    """Vectorize mask boundaries to closed exterior rings in output coords.
+def smooth_closed_ring(pts, step: float = 1.0, sigma_steps: float = 1.5,
+                       eps_steps: float = 0.2) -> np.ndarray | None:
+    """Smooth a closed ring traced along a pixel grid.
 
-    Uses rasterio's polygonizer when the input is georeferenced, otherwise
-    OpenCV contours in QGIS-pixel coordinates — exactly as predict.py did.
+    ``step`` is one pixel in the ring's units. The ring is resampled every
+    half pixel, Gaussian-smoothed along its length (sigma 1.5 px, wrapping
+    round the closure) and Douglas-Peucker simplified to 0.2 px: the pixel
+    staircase disappears, while the line stays within a fraction of a pixel
+    of the true bone edge (a 2 mm/px photo moves by well under 1 mm).
+    Returns an (N, 2) closed array, or None for degenerate rings."""
+    from scipy.ndimage import gaussian_filter1d
+
+    a = np.asarray(pts, dtype=np.float64)
+    if len(a) < 4:
+        return None
+    if not np.allclose(a[0], a[-1]):
+        a = np.vstack([a, a[:1]])
+    seg = np.linalg.norm(np.diff(a, axis=0), axis=1)
+    total = float(seg.sum())
+    if total < 4 * step:
+        return a                          # a speck: nothing to smooth
+    origin = a[0].copy()                  # float32 approxPolyDP needs small numbers
+    a = a - origin
+    t = np.concatenate([[0.0], np.cumsum(seg)])
+    n = max(8, int(total / (0.5 * step)))
+    u = np.linspace(0.0, total, n, endpoint=False)
+    r = np.column_stack([np.interp(u, t, a[:, 0]), np.interp(u, t, a[:, 1])])
+    r = gaussian_filter1d(r, sigma=sigma_steps * 2.0, axis=0, mode="wrap")
+    if HAS_CV2:
+        r = cv2.approxPolyDP(r.astype(np.float32).reshape(-1, 1, 2),
+                             eps_steps * step, True).reshape(-1, 2).astype(np.float64)
+    if len(r) < 3:
+        return None
+    r = np.vstack([r, r[:1]]) + origin
+    return r
+
+
+def smooth_staircase_ring(ring: Polyline) -> Polyline:
+    """Smooth a ring from an OLD export (raw pixel edges, before 2026-10).
+
+    Detected by its geometry: nearly every segment runs along one of two
+    perpendicular directions (the pixel grid, possibly rotated by the
+    georeference). The pixel size is the shortest common segment. Rings
+    that are already smooth come back unchanged."""
+    a = np.asarray(ring, dtype=np.float64)
+    if len(a) < 6:
+        return ring
+    d = np.diff(a, axis=0)
+    seg = np.linalg.norm(d, axis=1)
+    keep = seg > 0
+    if keep.sum() < 5:
+        return ring
+    # Two dominant directions (mod 180): the pixel grid's rows and columns
+    # in world space — not necessarily perpendicular, a GCP affine shears.
+    ang = np.degrees(np.arctan2(d[keep, 1], d[keep, 0])) % 180.0
+    hist, _ = np.histogram(ang, bins=180, range=(0.0, 180.0))
+    first = int(np.argmax(hist))
+    circ = lambda x, c: np.minimum(np.abs(x - c), 180.0 - np.abs(x - c))  # noqa: E731
+    far = circ(np.arange(180) + 0.5, first + 0.5) >= 20.0
+    second = int(np.argmax(np.where(far, hist, -1)))
+    near = (circ(ang, first + 0.5) <= 2.0) | (circ(ang, second + 0.5) <= 2.0)
+    if np.mean(near) < 0.9:
+        return ring
+    step = float(np.percentile(seg[keep], 10))
+    sm = smooth_closed_ring(a, step=step)
+    return ring if sm is None else [(float(x), float(y)) for x, y in sm]
+
+
+def mask_to_rings(mask01: np.ndarray, georef: GeoRef | None) -> list[Polyline]:
+    """Vectorize mask boundaries to smooth closed exterior rings in output coords.
+
+    The boundary is traced with marching squares (the line runs exactly
+    between bone and non-bone pixels, not along pixel centres), smoothed
+    with :func:`smooth_closed_ring`, and mapped to output coordinates by
+    the SAME function as the centerlines, so outlines and centerlines
+    share one convention. Before 2026-10 the rings were the raw pixel
+    edges (rasterio ``shapes``): a 1-pixel staircase that CAD showed as
+    zig-zag lines.
     """
-    rings: list[Polyline] = []
-    if HAS_RASTERIO and georef is not None and georef.homography is not None:
-        # Perspective: polygonize in PIXEL space (identity transform), then
-        # push every vertex through the exact homography.
-        from boneseg.data.georef_fit import apply_homography
-        ident = rasterio.transform.Affine.identity()
-        for geom, val in rio_shapes(mask01, mask=(mask01 > 0), transform=ident):
-            if val == 1:
-                pts = apply_homography(georef.homography, geom["coordinates"][0])
-                rings.append([(float(x), float(y)) for x, y in pts])
-    elif HAS_RASTERIO and georef is not None:
-        for geom, val in rio_shapes(mask01, mask=(mask01 > 0), transform=georef.transform):
-            if val == 1:
-                rings.append([(float(x), float(y)) for x, y in geom["coordinates"][0]])
-    elif HAS_CV2:
-        contours, _ = cv2.findContours(mask01, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        for c in contours:
-            raw = c.reshape(-1, 2).tolist()
-            if len(raw) < 3:
+    from skimage.measure import find_contours
+
+    m = (np.asarray(mask01) > 0).astype(np.uint8)
+    if not m.any():
+        return []
+    rings_px: list[Polyline] = []
+    n, _lab, stats, _c = cv2.connectedComponentsWithStats(m, connectivity=8)
+    for i in range(1, n):
+        x, y, w, h, _area = stats[i]
+        crop = (_lab[y:y + h, x:x + w] == i).astype(np.float32)
+        for c in find_contours(np.pad(crop, 1), 0.5):
+            if len(c) < 4:
                 continue
-            # Y-flip so the vectors align with the raster QGIS draws at Y=0..-H
-            pts: Polyline = [(float(x), float(-y)) for x, y in raw]
-            pts.append(pts[0])  # close ring
-            rings.append(pts)
-    else:
-        logger.warning("no rasterio or opencv available for polygonization")
-    return rings
+            cx = c[:, 1] - 1 + x
+            cy = c[:, 0] - 1 + y
+            # positive signed area (x right, y down) = exterior; negative = hole
+            if 0.5 * np.sum(cx * np.roll(cy, -1) - np.roll(cx, -1) * cy) <= 0:
+                continue
+            sm = smooth_closed_ring(np.column_stack([cx, cy]))
+            if sm is not None:
+                rings_px.append([(float(px), float(py)) for px, py in sm])
+    return polylines_px_to_output(rings_px, georef)
 
 
 def rings_to_geojson_dict(rings: list[Polyline], georef: GeoRef | None) -> dict:

@@ -337,6 +337,9 @@ def load_vectors(vec: dict, georef: GeoRef | None, notes: list[str]
 
     if not rings and not lines:
         return [], [], None, False
+    # Exports before 2026-10 traced raw pixel edges (zig-zag in CAD).
+    from boneseg.postprocessing.vectorize import smooth_staircase_ring
+    rings = [smooth_staircase_ring(r) for r in rings]
     if not _looks_pixel(rings + lines):
         return rings, lines, crs, True
     if georef is None:

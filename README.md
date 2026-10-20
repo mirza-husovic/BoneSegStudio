@@ -24,9 +24,9 @@ Unretouched output at default settings.*
 ## Why BoneSeg Studio?
 
 Turning excavation photographs into scaled bone drawings is normally done by
-tracing every grave by hand — slow, and hard to keep consistent across a site.
-BoneSeg Studio cuts that from hours to minutes: a U-Net proposes the bone
-outlines, you review and correct it in the interactive editor, and export
+tracing every grave by hand, which is slow and hard to keep consistent across a site.
+BoneSeg Studio is designed to shorten that work: a U-Net proposes the bone
+outlines, you review and correct them in the interactive editor, and export
 straight to GeoJSON / DXF / SVG for QGIS or CAD. One offline desktop app covers
 the whole path from photograph to vector drawing.
 

@@ -30,8 +30,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Weight-free unit tests only: GCP parsing, georeferencing math, DXF and
-      # catalog-plate export. The smoke test needs the model checkpoint, which
+      # Weight-free unit tests only: GCP parsing, georeferencing math, DXF,
+      # catalog-plate and site-plan export, outline smoothing. The smoke test needs the model checkpoint, which
       # ships as a release asset rather than in the repo, so it is run locally.
       - name: Run unit tests
         run: |
@@ -39,3 +39,4 @@ jobs:
           python tests/test_georef_fit.py
           python tests/test_plate.py
           python tests/test_dxf_image.py
+          python tests/test_site_export.py

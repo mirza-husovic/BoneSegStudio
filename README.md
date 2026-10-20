@@ -2,14 +2,18 @@
 
 [![CI](https://github.com/mirza-husovic/BoneSegStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/mirza-husovic/BoneSegStudio/actions/workflows/ci.yml)
 
-A fully-offline desktop application for **archaeological bone
+An offline desktop application for **archaeological bone
 segmentation, skeletonization and vectorization**. It wraps a trained
 production UNet (EfficientNet-B3) in a fast local web interface: load an
-orthophoto or grave photo, run inference, inspect
-the mask / overlay / skeleton, paint corrections with full undo/redo,
-tune the postprocessing live, and export vectors for your drawing workflow.
+orthophoto or grave photo, run inference, correct the bone lines with full
+undo/redo, georeference the grave with its survey points, see all graves of a
+site together on a map, and export the drawing to CAD (DXF), GIS (GeoPackage /
+GeoJSON) or a scaled PDF plan.
 
-Everything runs locally on Windows with a single `python app.py`. An optional
+Everything runs locally on Windows with a single `python app.py`; photographs
+and drawings never leave the machine. The one exception is the optional
+**Site view** map, which loads its map library and the Esri / OpenStreetMap
+basemap tiles from the internet. An optional
 `Dockerfile` is included for containerized deployment; the model weights stay
 outside the image and are mounted at runtime.
 
@@ -27,7 +31,7 @@ Turning excavation photographs into scaled bone drawings is normally done by
 tracing every grave by hand, which is slow and hard to keep consistent across a site.
 BoneSeg Studio is designed to shorten that work: a U-Net proposes the bone
 outlines, you review and correct them in the interactive editor, and export
-straight to GeoJSON / DXF / SVG for QGIS or CAD. One offline desktop app covers
+straight to DXF / GeoPackage / GeoJSON / SVG / PDF for CAD or QGIS. One offline desktop app covers
 the whole path from photograph to vector drawing.
 
 ---
@@ -63,13 +67,28 @@ held-out grave at default settings, captured live from the running app.
   probability map is cached).
 - **Skeletonization** with branch pruning and isolated-fragment removal for
   clean archaeological centerlines.
-- **Vectorization** to **GeoJSON** (centerlines + outline polygons, in the
-  input CRS when georeferenced) and **SVG** (image-aligned, for Illustrator /
-  Inkscape).
+- **One line per bone edge.** The model draws every bone's contour as a thin
+  stroke; its spline-smoothed **centerline** is the drawing: what the Skeleton
+  view shows, what you edit, and what every export writes. (The two edges of
+  that stroke are kept only as an optional check layer, *mask edges*.)
+- **Vectorization** to **DXF** (AutoCAD), **GeoJSON** and **SVG**, in the
+  input CRS when georeferenced.
+- **In-app georeferencing (GCP tool)**: load the survey point file (TXT / CSV /
+  Excel) and click the markers in any order; 3 points fit an affine, 4+ also
+  correct the perspective of oblique photos. The coordinate system is detected
+  from the numbers (HTRS96/TM, HDKS / MGI Balkans zone 6, UTM ...), including
+  points a GNSS receiver recorded without a projection set.
+- **Site view**: every georeferenced grave of a site on one map (Esri
+  satellite or OpenStreetMap), with warnings for graves that are not
+  georeferenced, lie far from the rest or outside their coordinate system.
+  **Check on the map** shows the grave in the editor right after
+  georeferencing. The chosen graves export as one **site plan**: DXF (layer
+  per grave, photos as underlay), GeoPackage + GeoTIFF photos for GIS, and an
+  A3 **PDF plan at a standard scale**.
 - **Batch mode**: point at a folder, get one output subfolder per image plus a
   `batch_summary.json`.
-- **Georeferencing preserved** end-to-end: GeoTIFF inputs keep their CRS in the
-  mask raster and GeoJSON outputs.
+- **Georeferencing preserved** end-to-end: GeoTIFF inputs and GCP-georeferenced
+  photos keep their CRS in every raster and vector output.
 - Rotating **file logging**, graceful **error handling**, and a modular
   architecture that keeps inference, post-processing and export cleanly
   separated.
@@ -171,15 +190,25 @@ Useful flags:
    the GeoJSON/DXF export writes, so what you see is what you get. While
    you are mid-edit the view temporarily shows the raster edit layer;
    after *Apply edits* it returns to crisp vectors.
-6. Pick formats under **Export** and click **Export**.
-7. **Save to training set** — writes `images/<stem>.png`,
+   When you edit in the Skeleton view, the edited lines also decide the
+   outlines: mask parts no line runs through are left out of every export.
+6. **Georeference (G)**: drop the survey point file into the GCP panel,
+   click the markers on the photo in any order, check the EPSG (pre-filled
+   from the numbers) and **Apply georeference**; the fit error is shown in
+   metres. **Check on the map** opens the Site view on this grave.
+7. Pick formats under **Export** and click **Export**.
+8. **Save to training set** — writes `images/<stem>.png`,
    `masks/<stem>.png`, `overlays/<stem>.png` and updates
    `dataset_manifest.csv` in a staging folder
    (default `~/Desktop/UNET_STAGING`), so corrected pairs can later be merged
    into your training dataset by a plain folder copy. The saved mask includes
    all your applied edits.
-8. **Batch** (toolbar) — paste an input folder and an output folder, click
+9. **Batch** (toolbar) — paste an input folder and an output folder, click
    **Process folder**.
+10. **Site** (toolbar): add graves (photos, export folders or any exported
+    file) with **Graves...** / **Folder...**, tick the ones to show, and export
+    the site plan (DXF / GPKG / PDF). Keep **Bone lines** on; **Mask edges** is
+    only for checking the raw mask.
 
 ### Viewer controls
 
@@ -189,6 +218,8 @@ Useful flags:
 | Drag (Pan tool), middle-drag, right-drag, Space+drag | Pan — always available, no zoom required |
 | Double-click (Pan tool) / `F` / **Fit** | Fit image to window |
 | `B` / `E` / `P` / `S` / `H` | Brush / Eraser / Line pen / Select / Pan |
+| `N` / `G` / `M` | Nodes (move line points) / GCP georeferencing / SAM |
+| `X` / `J` | Cut a centerline / join two line ends |
 | `[` `]` | Tool size down/up |
 | `1` `2` `3` `4` `5` | Overlay / Original / Mask / Skeleton / Clean view |
 | Ctrl+Z / Ctrl+Y | Undo / redo mask edits |
@@ -213,17 +244,25 @@ BoneSegStudio/
 │   │   ├── device.py            # CUDA detection + CPU fallback
 │   │   └── engine.py            # sliding-window inference (ported from predict.py)
 │   ├── data/
-│   │   ├── readers.py           # PIL / rasterio image loading
-│   │   └── writers.py           # mask, overlay, skeleton, GeoJSON, SVG writers
+│   │   ├── readers.py           # PIL / rasterio image loading (+ GCP sidecars)
+│   │   ├── writers.py           # mask, overlay, skeleton, GeoJSON, DXF, SVG, GeoTIFF
+│   │   ├── gcp_parse.py         # survey point files (TXT / CSV / Excel)
+│   │   ├── crs_guess.py         # EPSG detection from coordinate magnitudes
+│   │   ├── georef_fit.py        # GCP affine / homography fit, rectification
+│   │   ├── plate.py             # A4 catalogue plate PDF
+│   │   ├── master.py            # optional cumulative master file
+│   │   └── site.py              # Site view: collect, place, export site plans
 │   ├── postprocessing/
 │   │   ├── cleanup.py           # threshold + small-object removal
 │   │   ├── skeleton.py          # medial axis + graph pruning
-│   │   └── vectorize.py         # skeleton→polylines, mask→outline rings
+│   │   └── vectorize.py         # skeleton→polylines, mask→smoothed edge rings
 │   └── webui/
 │       ├── server.py            # FastAPI endpoints + server-side state
-│       └── static/              # index.html, app.css, app.js (vanilla, Canvas 2D)
+│       ├── dialogs.py           # native Windows file / folder dialogs
+│       └── static/              # index.html, app.css, app.js + site.js (vanilla JS)
 ├── tests/
-│   └── smoke_test.py            # headless end-to-end test
+│   ├── smoke_test.py            # headless end-to-end test (needs the weights)
+│   └── test_*.py                # weight-free tests, run in CI
 ├── logs/                        # boneseg.log (rotating) — created at runtime
 ├── uploads/                     # images opened via the browser — created at runtime
 └── outputs/                     # default export location — created at runtime
@@ -233,7 +272,8 @@ BoneSegStudio/
 pipeline (`inference`, `data`, `postprocessing`, `pipeline`) is usable
 headless from scripts and notebooks — see `tests/smoke_test.py`.
 
-The frontend is ~600 lines of dependency-free JavaScript on a 2D canvas:
+The editor is dependency-free JavaScript on a 2D canvas (the Site view map
+uses Leaflet, loaded on first use):
 pan/zoom always available, stroke-level undo/redo, one-click component
 selection, and mask edits applied to the full-resolution mask as a sparse diff.
 
@@ -247,14 +287,16 @@ flowchart TD
     B --> C["Binary mask<br/>threshold + cleanup"]
     EDIT["Manual correction<br/>paint · erase · undo/redo"] -.-> C
     C --> F["Medial-axis skeleton<br/>+ branch pruning"]
-    C --> G["Boundary vectorization"]
-    F --> H["Centerline polylines<br/>(spline-smoothed)"]
-    G --> I["Outline polygons"]
+    C --> G["Edge tracing<br/>(smoothed)"]
+    F --> H["Centerline polylines<br/>spline-smoothed = the drawing"]
+    G --> I["Mask edges<br/>(optional check layer)"]
     C --> J["Export"]
     H --> J
     I --> J
-    J --> K["GeoJSON · DXF · SVG<br/>mask / overlay / skeleton PNG · plate PDF"]
+    GCP["GCP georeferencing"] -.-> J
+    J --> K["GeoJSON · DXF · SVG · GeoTIFF<br/>mask / overlay / skeleton PNG · plate PDF"]
     K --> L["CAD / GIS tools"]
+    K --> S["Site view · site plan<br/>DXF · GeoPackage · PDF"]
 ```
 
 - **Model:** UNet + EfficientNet-B3, 1 output class, 13.16 M parameters —
@@ -277,17 +319,29 @@ flowchart TD
 - **Coordinates:** georeferenced inputs produce geo-space rasters, GeoJSON and
   DXF in the input CRS; plain images use pixel coordinates with Y negated to
   match QGIS's placement of an ungeoreferenced raster (identical to `predict.py`).
+  Photos are georeferenced in the app from survey points (GCP tool); the fit is
+  stored next to the photo as `<photo>.gcps.json` plus a world file, so the
+  photo reopens georeferenced.
 - **Exports:** mask raster, overlay PNG, skeleton PNG, GeoJSON (centerlines +
-  polygons), **DXF** (AutoCAD R2010, layers BONE_OUTLINE / BONE_CENTERLINE —
-  open in AutoCAD and save as DWG there), SVG.
-- **Site master file:** the *Append to site master file* option merges every
+  mask-edge polygons), **DXF** (AutoCAD R2010: the drawing on layer
+  `BONE_CENTERLINE`, the photo on `PHOTO`, the `BONE_OUTLINE` mask-edge layer
+  switched off; open in AutoCAD and save as DWG there), SVG, GeoTIFF photo,
+  A4 plate PDF.
+- **Site plan (Site view):** the visible graves in one CRS. DXF with layers
+  `<grave>_LINES` (the drawing), optional `<grave>_MASK_EDGE` and
+  `<grave>_PHOTO`; GeoPackage layers `bone_lines`, `mask_edges`,
+  `photo_footprints` (attribute `grave`) plus one GeoTIFF per photo; an A3 PDF
+  at the largest standard scale (1:20 ... 1:10 000) that fits the graves.
+- **Site master file** (older and optional; the Site view does this better,
+  with photos, checks and a PDF): the *Append to site master file* option merges every
   exported grave into ONE site file set in the output directory:
   `master.gpkg` (GeoPackage — true per-grave layers `<grave>_outlines` /
   `<grave>_centerlines` in QGIS), `master.dxf` (per-grave CAD layers) and
   `master_centerlines/outlines.geojson` (single layer with an `image`
   attribute — GeoJSON has no layer concept). Re-export replaces instead of
   duplicating. Georeferenced graves land at their true world positions;
-  plain photos are laid out in a strip.
+  plain photos are laid out in a strip. In `master.dxf` the outline layers are
+  switched off, as in the per-grave DXF.
 - **Viewer:** scroll = zoom, drag = pan, double-click = reset on the
   Overlay / Original / Mask / Skeleton tabs.
 
@@ -342,6 +396,9 @@ DXF / SVG. Both figures are raw model output at default settings (threshold
 | **"Unsupported file type"** | Only JPG/PNG/TIFF/GeoTIFF are accepted. |
 | **Skeleton is empty** | `sknw` may be missing (`pip install sknw`), or the mask is empty at the current threshold — lower the threshold and *Apply settings*. |
 | **Port 7860 in use** | The launcher now auto-selects the next free port and prints the URL. To force one: `python app.py --port 7861`. |
+| **Site view map stays empty** | The map library and basemap tiles come from the internet; check the connection. Single-grave Export works offline. |
+| **Double lines in CAD** | A mask-edge layer is on (`BONE_OUTLINE` / `<grave>_MASK_EDGE`). Turn it off; the drawing is `BONE_CENTERLINE` / `<grave>_LINES`. |
+| **Grave lands far away on the map** | Wrong EPSG for the survey points, or E/N swapped. The Site view says which; fix the EPSG in the GCP panel and apply again. |
 | **Logs** | See `logs/boneseg.log` (rotating, 5 MB × 5). Model loading, inference, export and errors are all recorded. |
 
 ---
@@ -359,6 +416,8 @@ The architecture was designed so this slots in with minimal refactoring:
   already stacks them into one `catalog.pdf`. Configurable templates —
   photo-and-drawing side by side, custom title-block fields, alternate paper
   sizes — build on the existing `render_plate_figure` / `PipelineResult`.
+- **Site plan options**: choose the scale and paper size of the PDF plan
+  (now automatic, A3).
 
 ---
 

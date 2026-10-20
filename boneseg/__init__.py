@@ -15,5 +15,5 @@ Nothing in ``boneseg`` imports FastAPI except ``boneseg.webui``, so the
 whole processing pipeline is usable headless (scripts, notebooks, CLI).
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 APP_NAME = "BoneSeg Studio"

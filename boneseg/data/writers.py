@@ -317,8 +317,10 @@ def save_dxf(
     """Write outlines + centerlines as a DXF for direct CAD ingestion.
 
     Same layer convention as predict.py:
-      BONE_OUTLINE    — closed LWPOLYLINEs (predicted outline polygons)
-      BONE_CENTERLINE — open LWPOLYLINEs (smoothed medial-axis lines)
+      BONE_CENTERLINE — open LWPOLYLINEs: the bone drawing (one smoothed
+                        line along every bone edge, as in the Skeleton view)
+      BONE_OUTLINE    — closed LWPOLYLINEs: both edges of the model's thin
+                        stroke (a double line), switched off — for checking
       PHOTO           — the photo as an IMAGE underlay (optional, when
                         ``image_rgb`` is given; rectified when georeferenced)
 

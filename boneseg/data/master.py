@@ -142,7 +142,9 @@ def _rebuild_master_dxf(master_dir: Path, geo: bool) -> Path | None:
         for suffix in ("OUTLINE", "CENTERLINE"):
             name = _layer_name(stem, suffix)
             if name not in doc.layers:
-                doc.layers.add(name, color=color)
+                layer = doc.layers.add(name, color=color)
+                if suffix == "OUTLINE":
+                    layer.off()  # double edge of the drawn stroke — see writers.save_dxf
 
     for f in outline["features"]:
         stem = f["properties"]["image"]

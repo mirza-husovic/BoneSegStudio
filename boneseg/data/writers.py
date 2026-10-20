@@ -333,7 +333,11 @@ def save_dxf(
         return None
 
     doc = ezdxf.new(dxfversion="R2010")
-    doc.layers.add("BONE_OUTLINE", color=3)      # green
+    # The model draws each bone's contour as a thin (~2 px) stroke: its
+    # CENTERLINE is the drawing seen in BoneSeg's Skeleton view; the
+    # OUTLINE layer holds both edges of that stroke (a double line), kept
+    # for checking but switched off so CAD opens showing the drawing.
+    doc.layers.add("BONE_OUTLINE", color=3).off()      # green
     doc.layers.add("BONE_CENTERLINE", color=4)   # cyan
     doc.header["$INSUNITS"] = 6 if georef is not None else 0  # 6 = meters
     msp = doc.modelspace()

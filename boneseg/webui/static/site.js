@@ -285,7 +285,7 @@
     const g = it.g;
     const notes = g.notes.length ? `<ul>${g.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : "";
     return `<b>${escapeHtml(g.name)}</b><br>
-      <span class="hint">${escapeHtml(g.crs || "no CRS")} · ${g.n_rings} outlines · ${g.n_lines} centerlines` +
+      <span class="hint">${escapeHtml(g.crs || "no CRS")} · ${g.n_lines} bone lines` +
       `${g.dist_m != null ? ` · ${g.dist_m} m from site centre` : ""}</span>${notes}
       ${canOpen(g) ? `<div class="btnrow"><button class="btn sm primary" data-open="${items.indexOf(it)}">✎ Open in editor</button></div>` : ""}
       ${g.current ? `<div class="btnrow"><button class="btn sm primary" data-back="1">✎ Back to the editor</button></div>` : ""}`;
@@ -411,7 +411,8 @@
   $("#sitebase").addEventListener("change", (e) => setBasemap(e.target.value));
   for (const id of ["#sitephotos", "#siteoutlines", "#sitecenter", "#sitelabels"]) {
     $(id).addEventListener("change", () => {
-      store.set(id.slice(1), $(id).checked ? "1" : "0");
+      const key = id.slice(1) + (id === "#siteoutlines" || id === "#sitecenter" ? "_v2" : "");
+      store.set(key, $(id).checked ? "1" : "0");
       refreshAll();
     });
   }
@@ -474,8 +475,10 @@
   /* ---------------- restore ---------------- */
   $("#sitevec").value = store.get("vecdir", "");
   $("#sitebase").value = store.get("base", "esri");
-  for (const [id, def] of [["sitephotos", "1"], ["siteoutlines", "1"], ["sitecenter", "0"], ["sitelabels", "1"]]) {
-    $("#" + id).checked = store.get(id, def) === "1";
+  // v2 keys: the old defaults (outlines on, centerlines off) were wrong — the
+  // centerlines ARE the drawing — so stored v1 choices must not carry over.
+  for (const [id, def] of [["sitephotos", "1"], ["siteoutlines_v2", "0"], ["sitecenter_v2", "1"], ["sitelabels", "1"]]) {
+    $("#" + id.replace("_v2", "")).checked = store.get(id, def) === "1";
   }
   renderSources();
 })();

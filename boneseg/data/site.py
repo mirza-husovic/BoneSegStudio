@@ -622,8 +622,8 @@ def scan_site(sources: list[str], vec_dir: str | None = None, recursive: bool = 
         cg.update(photo=current["photo"], photo_kind="current", current=True,
                   edited_lines=bool(current.get("edited_lines")))
         if cg["edited_lines"]:
-            cg["notes"].append("centerlines edited by hand — shown and exported even "
-                               "with Centerlines off (the outlines come from the mask)")
+            cg["notes"].append("bone lines edited by hand in the Skeleton view — always "
+                               "shown and exported")
         graves.insert(0, cg)
 
     for g in graves:
@@ -936,7 +936,7 @@ def _write_dxf(recs: list[dict], out: Path, want_rings: bool, want_lines: bool) 
             ent.dxf.flags = ent.dxf.flags | 8
     for r in recs:
         color = _ACI_COLORS[r["index"] % len(_ACI_COLORS)]
-        lo, lc = _layer_name(r["name"], "OUTLINE"), _layer_name(r["name"], "CENTERLINE")
+        lo, lc = _layer_name(r["name"], "MASK_EDGE"), _layer_name(r["name"], "LINES")
         r_lines = want_lines or r["edited_lines"]
         for ln, want in ((lo, want_rings), (lc, r_lines)):
             if want and ln not in doc.layers:
@@ -955,7 +955,7 @@ def _write_dxf(recs: list[dict], out: Path, want_rings: bool, want_lines: bool) 
 
 def _write_gpkg(recs: list[dict], out: Path, site_crs: str | None,
                 want_rings: bool, want_lines: bool) -> list[Path]:
-    """GeoPackage with three layers (``outlines``, ``centerlines``,
+    """GeoPackage with three layers (``bone_lines``, ``mask_edges``,
     ``photo_footprints``; attribute ``grave``) + one GeoTIFF per photo."""
     import geopandas as gpd
     from shapely.geometry import LineString, Polygon
@@ -965,12 +965,12 @@ def _write_gpkg(recs: list[dict], out: Path, site_crs: str | None,
     written = [out]
     layers = []
     if want_rings:
-        layers.append(("outlines", [(r["name"], Polygon(ring)) for r in recs
+        layers.append(("mask_edges", [(r["name"], Polygon(ring)) for r in recs
                                      for ring in r["rings"] if len(ring) >= 4]))
     lines_rows = [(r["name"], LineString(l)) for r in recs
                   if want_lines or r["edited_lines"] for l in r["lines"] if len(l) >= 2]
     if lines_rows:
-        layers.append(("centerlines", lines_rows))
+        layers.append(("bone_lines", lines_rows))
     layers.append(("photo_footprints", [(r["name"], Polygon(r["footprint"])) for r in recs
                                          if r["footprint"]]))
     n = 0
@@ -1054,17 +1054,15 @@ def _write_pdf(recs: list[dict], out: Path, site_crs: str | None, title: str,
     lw = 0.35 if scale <= 100 else 0.25
     for r in recs:
         color = _HEX_COLORS[r["index"] % len(_HEX_COLORS)] if with_photos else "black"
-        if want_rings:
+        if want_rings:   # mask edges: a checking aid, drawn thin and grey
             for ring in r["rings"]:
                 a = np.asarray(ring)
-                ax.plot(a[:, 0], a[:, 1], color=color, lw=lw, zorder=3)
+                ax.plot(a[:, 0], a[:, 1], color="#888", lw=lw * 0.5, zorder=2)
         if want_lines or r["edited_lines"]:
-            # Hand-edited centerlines ARE the drawing: full weight, not grey.
-            edited = r["edited_lines"]
+            # The bone lines ARE the drawing (BoneSeg's Skeleton view).
             for line in r["lines"]:
                 a = np.asarray(line)
-                ax.plot(a[:, 0], a[:, 1], color=color if (with_photos or edited) else "#555",
-                        lw=lw if edited else lw * 0.7, zorder=3)
+                ax.plot(a[:, 0], a[:, 1], color=color, lw=lw, zorder=3)
         if not with_photos and r["footprint"] and not (r["rings"] or r["lines"]):
             a = np.asarray(r["footprint"])
             ax.plot(a[:, 0], a[:, 1], color="#999", lw=0.3, ls="--", zorder=2)
@@ -1095,7 +1093,7 @@ def _write_pdf(recs: list[dict], out: Path, site_crs: str | None, title: str,
                   arrowprops=dict(arrowstyle="-|>", lw=1.2, color="black", mutation_scale=14))
     page.text(nx, ny + 15, "N", fontsize=10, ha="center", fontweight="bold")
     meta = [f"Coordinate system: {site_crs or 'local (no EPSG)'}",
-            f"Vectors: {', '.join(v for v, w in (('outlines', want_rings), ('centerlines', want_lines)) if w) or '—'}"
+            f"Vectors: {', '.join(v for v, w in (('bone lines', want_lines), ('mask edges', want_rings)) if w) or '—'}"
             + ("; photos rectified" if with_photos else ""),
             f"BoneSeg Studio · {date.today().isoformat()}"]
     for k, line in enumerate(meta):
@@ -1108,7 +1106,7 @@ def _write_pdf(recs: list[dict], out: Path, site_crs: str | None, title: str,
 
 def export_site(graves: list[dict], out_base: str, site_crs: str | None,
                 formats: list[str], current: dict | None = None,
-                photos: bool = True, outlines: bool = True, centerlines: bool = False,
+                photos: bool = True, outlines: bool = False, centerlines: bool = True,
                 labels: bool = True, title: str = "") -> dict:
     """Write the chosen site exports next to ``out_base`` (extension ignored):
     ``.dxf`` (CAD), ``.gpkg`` + GeoTIFFs (GIS), ``.pdf`` (A3 plan)."""
@@ -1117,7 +1115,7 @@ def export_site(graves: list[dict], out_base: str, site_crs: str | None,
         base = base.with_suffix("")
     base.parent.mkdir(parents=True, exist_ok=True)
     if not (outlines or centerlines or photos):
-        raise ValueError("Nothing selected: turn on outlines, centerlines or photos.")
+        raise ValueError("Nothing selected: turn on bone lines, mask edges or photos.")
     formats = [f for f in formats if f in ("dxf", "gpkg", "pdf")]
     if not formats:
         raise ValueError("Choose at least one export format.")
